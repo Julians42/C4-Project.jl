@@ -8,6 +8,10 @@ freqmin, freqmax = 0.05, 9.9
 frequency_plots = [[0.1,0.2],[0.2,0.5],[0.5,1.],[1.,2.],[2.,5.],[5.,10.],[10.,20.]]
 scale, lw = 0.5, 0.5 #compress waveforms and thin line width
 
+#select day range
+startdate = "2018-07-01"
+enddate = "2018-07-02"
+days = Date(startdate):Day(1):Date(enddate)
 
 addprocs()
 
@@ -16,13 +20,17 @@ addprocs()
     aws = aws_config(region="us-west-2")
     bucket = "scedc-pds"
     bucket2 = "basin"
-    startdate = Date("2018-07-01")
-    enddate = Date("2018-07-01")
+    #select day range
+    startdate = "2018-07-01"
+    enddate = "2018-07-02"
+    days = Date(startdate):Day(1):Date(enddate)
+    startdate = days[1]
+    enddate = days[1]
     network = "CI"
     channel = "BH?"
     OUTDIR = "~/data"
 end
-filelist = s3query(aws, startdate, enddate=enddate, network=network,channel=channel)
+filelist = s3query(aws, startdate, enddate=enddate, network=network,channel=channel);
 @eval @everywhere filelist=$filelist
 # do transfer
 ar = ec2stream(aws,bucket,filelist);
@@ -63,7 +71,9 @@ function indexer(ar::Array{String,1}, stations::Array{String,1})
     return([indices,not_indices])
 end
 # 2 element array of arrays storing source and reciever indices
-indices = indexer(filelist, ["SVD","TA2"])
+sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"]
+    #,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI"] #Node data
+indices = indexer(filelist, sources)
 
 pairs = Array{Array{Int64,1}}(undef, 0)
 for i in 1:length(indices[1])
@@ -72,9 +82,13 @@ for i in 1:length(indices[1])
     end
 end
 
+#Patch until SeisNoise removes Plots or updates it
+using Pkg 
+ENV["GR"] = ""
+Pkg.build("GR")
 
 @everywhere begin
-    using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore, Distributed
+    using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore
     function preprocess2(ar::SeisData, fs::Float64, freqmin::Float64, freqmax::Float64, cc_step::Int64, cc_len::Int64)
         process_raw!(ar, fs)
         R = RawData(ar,cc_len,cc_step)
@@ -94,12 +108,9 @@ ans = nothing
 #ar = nothing
 GC.gc()
 
-
-
-
 # Correlate function with stacking
 @everywhere begin 
-    using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore, Distributed, Statistics
+    #using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore, Distributed, Statistics
     function cc_medianmute!(C::CorrData, cc_medianmute_α::Float64 = 10.0)
         C.corr, inds = cc_medianmute(C.corr, cc_medianmute_α)
         C.t = remove_medianmute(C, inds)
@@ -115,7 +126,7 @@ GC.gc()
         return A[:, inds], inds
     end
     remove_medianmute(C::CorrData, inds) = (return C.t[inds])
-    function correlate5(ffts::Array{FFTData,1}, freqmin::Float64, freqmax::Float64, maxlag::Float64)
+    function correlate5(ffts::Array{FFTData,1}, maxlag::Float64)
         C = correlate(ffts[1],ffts[2],maxlag) 
         #clean_up!(C,freqmin,freqmax)
         cc_medianmute!(C, 10.)  #filter extraneous indices
@@ -123,21 +134,10 @@ GC.gc()
         save_corr(C, "~/CORR")
     end
 end
-T5 = @elapsed pmap(x -> correlate5(x, freqmin, freqmax, maxlag), map(y -> ffts[y], pairs))
+T5 = @elapsed pmap(x -> correlate5(x, maxlag), map(y -> ffts[y], pairs))
 
 
-corr_name = joinpath.("CORR/",readdir("CORR"))
-corrs = Array{CorrData,1}(undef,0)
-@everywhere begin
-    using JLD2
-    function testfunc(x)
-        t = jldopen("$(x)")
-        push!(corrs, t)
-        close(t)
-    end 
-end
-pmap(x-> testfunc(x), corr_name)
-
+corr_name = joinpath.("CORR/",readdir("CORR")) #get array of name strings
 #load corrs into array
 function testfunc(names::Array{String,1})
     corrs = Array{CorrData,1}(undef,0)
@@ -149,10 +149,10 @@ function testfunc(names::Array{String,1})
     return(corrs)
 end 
 corrs = testfunc(corr_name)
-#map(x-> testfunc(x), corr_name)
+
 
 #write into one file
-fo = jldopen("july2018.jld2", "w") # name of the station pairs, most computationally expensive
+fo = jldopen("july2018.jld2", "a+") # name of the station pairs, most computationally expensive
 for (index, value) in enumerate(corrs)
     # continue again if xcorr is empty
 	isempty(value.corr) && continue
