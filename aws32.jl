@@ -1,4 +1,8 @@
-using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,  SCEDC, AWSCore, Distributed, JLD2, Statistics
+# Install julia, add AIM role with s3 access, install packages.
+using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Statistics
+
+#Get a timestamp for the start
+t_start = Dates.now()
 
 cc_step, cc_len = 3600, 3600
 maxlag, fs = 1500., 40. # maximum lag time in correlation, sampling frequency
@@ -9,9 +13,9 @@ frequency_plots = [[0.1,0.2],[0.2,0.5],[0.5,1.],[1.,2.],[2.,5.],[5.,10.],[10.,20
 scale, lw = 0.5, 0.5 #compress waveforms and thin line width
 
 #select day range
-startdate = "2018-07-01"
-enddate = "2018-07-02"
-days = Date(startdate):Day(1):Date(enddate)
+# startdate = "2018-07-01"
+# enddate = "2018-07-02"
+# days = Date(startdate):Day(1):Date(enddate)
 
 addprocs()
 
@@ -24,8 +28,8 @@ addprocs()
     startdate = "2018-07-01"
     enddate = "2018-07-02"
     days = Date(startdate):Day(1):Date(enddate)
-    startdate = days[1]
-    enddate = days[1]
+    startdate = days[2]
+    enddate = days[2]
     network = "CI"
     channel = "BH?"
     OUTDIR = "~/data"
@@ -110,7 +114,7 @@ GC.gc()
 
 # Correlate function with stacking
 @everywhere begin 
-    #using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore, Distributed, Statistics
+    using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames,SCEDC, AWSCore, Distributed, Statistics
     function cc_medianmute!(C::CorrData, cc_medianmute_α::Float64 = 10.0)
         C.corr, inds = cc_medianmute(C.corr, cc_medianmute_α)
         C.t = remove_medianmute(C, inds)
@@ -152,7 +156,7 @@ corrs = testfunc(corr_name)
 
 
 #write into one file
-fo = jldopen("july2018.jld2", "a+") # name of the station pairs, most computationally expensive
+fo = jldopen("2018-183.jld2", "a+") # name of the station pairs, most computationally expensive
 for (index, value) in enumerate(corrs)
     # continue again if xcorr is empty
 	isempty(value.corr) && continue
@@ -166,6 +170,72 @@ for (index, value) in enumerate(corrs)
 end
 close(fo)
 
+t_end = Dates.now()
+t_diff = t_end - t_start
+println(t_diff)
+
+
+scale = 5.
+function plot_corrs2(corrs::Array{CorrData,1})
+    # Add filtered correlations to appropriate plots
+    T = collect(-corrs[1].maxlag:1/corrs[1].fs:corrs[1].maxlag)
+    for j in 1:length(frequency_plots)
+        #Select frequency
+        fmin = frequency_plots[j][1]
+        fmax = frequency_plots[j][2]
+        
+        #Determine the y scale axis
+        distances = []
+        for i in 1:length(corrs)
+            push!(distances, corrs[i].dist)
+        end
+        #y_max = minimum(maximum(distances) +0.5, 300.)
+        y_max = 300
+
+        # Define plots 
+        EE_plot = plot(title = "EE Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+        EN_plot = plot(title = "EN Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+        EZ_plot = plot(title = "EZ Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+        NN_plot = plot(title = "NN Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+        NZ_plot = plot(title = "NZ Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+        ZZ_plot = plot(title = "ZZ Moveout Plot - Filtered $(fmin) to $(fmax) Hz", xlims = (-25,25), ylims = (-1,y_max), color = :black)
+
+        for i in 1:length(corrs)
+            if corrs[i].comp == "EE"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(EE_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            elseif corrs[i].comp == "EN"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(EN_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            elseif corrs[i].comp == "EZ"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(EZ_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            elseif corrs[i].comp == "NN"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(NN_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            elseif corrs[i].comp == "NZ"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(NZ_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            elseif corrs[i].comp == "ZZ"
+                Cstack = bandpass(SeisNoise.stack(corrs[i]), fmin, fmax)
+                plot!(ZZ_plot, T, Cstack.corr / maximum(broadcast(abs,Cstack.corr))*scale .+ corrs[i].dist, fmt = :png, color = :black, linewidth = lw, reuse = false, legend = false)
+            end
+        end
+        png(EE_plot,"plots/EE_plot$(fmin)_$(fmax).png")
+        png(EN_plot,"plots/EN_plot$(fmin)_$(fmax).png")
+        png(EZ_plot,"plots/EZ_plot$(fmin)_$(fmax).png")
+        png(NN_plot,"plots/NN_plot$(fmin)_$(fmax).png")
+        png(NZ_plot,"plots/NZ_plot$(fmin)_$(fmax).png")
+        png(ZZ_plot,"plots/ZZ_plot$(fmin)_$(fmax).png")
+    end
+end
+
+# In command line run the following two lines (change based on day)
 #sudo apt install awscli
+#aws s3 cp 2018-182.jld2 s3://seisbasin/corr_data/2018/
+
+
+####################### Does not work ###########################
 #Upload file to AWS bucket
-s3_put(aws, "seisbasin", "2018/$(name)", read("july2018.jld2"))
+# name = "2018-182.jld2"
+# s3_put(aws, "seisbasin", "2018/$(name)", read("2018-183.jld2"))
