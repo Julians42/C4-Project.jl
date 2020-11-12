@@ -172,16 +172,6 @@ function s3_file_map(aws::AWSConfig,bucket::String,filein::String,fileout::Strin
 	return nothing
 end
 
-@everywhere begin
-    using SCEDC, AWSCore, Dates 
-    aws = aws_config(region="us-west-2")
-    bucket = "scedc-pds"
-    bucket2 = "seisbasin"
-    startdate = "2017-06-30" # Select Start Date
-    enddate = "2017-12-31" # Select End Date
-    days = Date(startdate):Day(1):Date(enddate)
-end
-
 #@everywhere begin # helper functions for safe correlation download
  
 """
@@ -416,6 +406,16 @@ function vert_plot(corrs_passed::Array{CorrData,1}, sta::String, comp_iter::Stri
     end
 end
 
+@everywhere begin
+    using SCEDC, AWSCore, Dates, DataFrames, AWSS3
+    aws = aws_config(region="us-west-2")
+    bucket = "scedc-pds"
+    bucket2 = "seisbasin"
+    startdate = "2017-01-01" # Select Start Date
+    enddate = "2018-12-31" # Select End Date
+    days = Date(startdate):Day(1):Date(enddate)
+end
+
 ############################# Index Download #####################################
 
 # Get list of CSVs to transfer corr_index/2017/2017_026_correlation_index.csv
@@ -428,137 +428,81 @@ safe_download(aws, bucket2, month_fnames, "~/") # Retain seisbasin filepathing
 
 stations = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
+df = CSV.File("files/all_locations_socal.csv") |> DataFrame! 
+@eval @everywhere df = $df
+job_name = "linear_2017_2018"
+@eval @everywhere job_name = $job_name
+############################# Get files for unique station pair ####################
 
+to_download = unique(Iterators.flatten([DataFrame(CSV.File(file)).paths for file in month_fnames]))
+safe_download(aws, bucket2, to_download, "~/")
 
-########################### Get unique source stations ###############
-
-repeat_pairs = Array{String, 1}(undef, 0)
-all_files = Array{String, 1}(undef, 0)
-for name in month_fnames
-    month_file = CSV.read(name)
-    m_files = month_file["Files"]
-    a_pth = month_file["paths"]
-    for (ind, pair) in enumerate(m_files) # could use something like python's ravel, but not spending more time here
-        push!(repeat_pairs, pair)
-        push!(all_files, a_pth[ind])
+function csv_merge(large_index = Array{String, 1})
+    """Returns dataframe with unique station pairs and csvs containing that station pair"""
+    all_pair_paths = DataFrame(pair =String[], files = Array[])
+    unq_pairs = unique(Iterators.flatten([DataFrame(CSV.File(file)).Files for file in large_index]))
+    for pair in unq_pairs
+        pair_paths = Array{String, 1}(undef, 0)
+        for csv in large_index
+            try
+                df = DataFrame(CSV.File(csv))
+                path = df[(findall(x -> x==pair, df.Files)),:].paths[1]
+                push!(pair_paths, path)
+            catch 
+                # That CSV doesn't have that pair - not really a problem!
+            end
+        end
+        #print(pair_paths)
+        push!(all_pair_paths, [pair, pair_paths])
     end
+    return all_pair_paths
 end
 
-unq_sta_pairs = unique(repeat_pairs)
+pair_paths_df = csv_merge(month_fnames)
 
-
-####################### Loop through station pairs ############################
-
-for unq_pair in unq_station_pairs
-    # Get correct jld2 files
-    corr_files = all_files[occursin.(unq_pair, all_files)]
-    # Transfer files
-    safe_download(aws, bucket2, corr_files, "~/")
-    # Read in correlations -- USE GLOB to get over years/months
-
-
-
-
-############################# Loop through stations ############################
-for station in stations
-    source_station = [station]
-    t1 = Dates.now()
-    filelist = nothing
-    for (index, dy) in enumerate(days)
-        year = Dates.year(dy)
-        path = join([Dates.year(dy),lpad(Dates.dayofyear(dy),3,"0")],"_") # Yeilds "YEAR_JDY"
-        next_filelist = list_corrs("/home/ubuntu/corr_index/$year/$(path)_correlation_index.csv",source_station, path) 
-        if index == 1
-            filelist = next_filelist
-        else
-            filelist = vcat(filelist, next_filelist)
-        end
+@everywhere begin 
+    using DataFrames, JLD2
+    # get lat, lon, and elevation (LLE) for station 
+    function LLE(station, df)
+        row = df[(findall(x -> x==station, df.station)),:]
+        lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+        return lat, lon, el
     end
-    if length(filelist) == 0 # if no correlations from that source station continue 
-        continue
+    # Add location, distance and azi to a corr
+    function add_corr_locations(corr::CorrData, df::DataFrame)
+        # Get names
+        source_station, reciever_station= split(corr.name, ".")[2], split(corr.name, ".")[end-2]
+        # Get lat lons of each station
+        lat1, lon1, el1 = LLE(source_station, df)
+        lat2, lon2, el2 = LLE(reciever_station, df)
+        # Convert to geoloc object 
+        source_loc = GeoLoc(lat=lat1, lon=lon1, el=float(el1))
+        reciever_loc = GeoLoc(lat=lat2, lon=lon2, el=float(el2))
+        # compute necessary params and add to corr. 
+        dist, azi, baz = get_dist(source_loc, reciever_loc), get_azi(source_loc, reciever_loc), get_baz(source_loc, reciever_loc)
+        corr.loc = source_loc
+        corr.dist, corr.azi, corr.baz = dist, azi, baz 
     end
-    println("$(length(filelist)) correlations to be processed for station $(source_station[1])")
-
-    safe_download(aws, bucket2, filelist, "~/") # data download
-
-    ################################# Load Data and Index ###################################
-
-    # correlations = joinpath.("/home/ubuntu/corrs", filelist)
-    #  # load station files
-    # corrs = pmap(x -> load_filelist(x), filelist)
-    # bools = [corr[2] for corr in corrs]
-    # corr_data = [corr[1] for corr in corrs]
-
-    # split elmts in filelist and return unique corr_pair and comps for stacking
-    truncated = Array{String,1}(undef,0) # unique stations and components 
-    truncated2 = Array{String,1}(undef,0) # Get unique station pairs
-    for i in 1:length(filelist)
-        elt = join(split(filelist[i],"/")[1:3],"/")
-        elt2 = join(split(filelist[i],"/")[1:2],"/")
-        push!(truncated, elt)
-        push!(truncated2, elt2)
+    # gets array of corrs for particular file
+    function corr_load(corr_large, key)
+        jld = jldopen(corr_large, "r")
+        files = keys(jld[key])
+        corrs_comp = [jld["$key/$file"] for file in files]
+        close(jld)
+        return corrs_comp
     end
-    unq_path = unique(truncated)
-    unq_pair = unique(truncated2)
-
-    ######################################### Stack Correlations ###################################
-    println("Stacking correlations .....")
-    corrs_stacked_mean = pmap(x -> load_sum_stack(x, 300.), unq_path) #returns array of corr_data stacked over days
-    corrs_stacked_robust = pmap(x -> load_sum_stack_robust(x, 300.), unq_path) # for robust stacking 
-    #corrs_stacked_pws = pmap(x -> load_sum_stack_pws(x, 300.), unq_path) # for phase-weighted stacking 
-    println("Correlations stacked!")
-    function corr_rotate(corrs_stacked::Array{CorrData,1}, sta_pair, sta_pair_comp)
-        big_array = Array{Array{CorrData,1}}(undef,0) # nested array of corr stacks per station pair
-        for (index, pair) in enumerate(sta_pair)
-            try
-                sta_pairs = findall(x -> occursin(pair, x), sta_pair_comp)# unq_path is pair + comp, while unq_pair is just station pairs
-                if length(sta_pairs)==9
-                    println(corrs_stacked[sta_pairs[1]].name)
-                    push!(big_array, corrs_stacked[sta_pairs])
-                end
-            catch e
-                println(e)
-            end
-        end
-
-        rotated = Array{Array{CorrData,1}}(undef,0) #rotate all corrs
-        for sta_group in big_array
-            try
-                rtt = SeisNoise.rotate(sta_group, sta_group[1].azi, sta_group[1].baz)
-                push!(rotated, rtt)
-            catch e
-                println(e)
-            end
-        end
-
-        processed_corrs = Array{CorrData,1}(undef,0) #flattens array - could be a one liner 
-        for elt in rotated
-            for corr in elt
-                push!(processed_corrs, corr)
-            end
-        end
-        return processed_corrs
-    end
-    println("Rotating correlations....")
-    processed_mean = corr_rotate(corrs_stacked_mean, unq_pair, unq_path)
-    processed_robust = corr_rotate(corrs_stacked_robust, unq_pair, unq_path)
-    #processed_pws = corr_rotate(corrs_stacked_pws, unq_pair, unq_path)
-    println("Correlations rotated!")
-    ##################################### Save and Transfer Stacked Correlations ##############################
-
-    #Save processed corrs to disk (for transfer to bucket/local)
     function save_processed(C::CorrData, CORROUT::String)
         # check if CORRDIR exists
         CORROUT = expanduser(CORROUT)
         if isdir(CORROUT) == false
             mkpath(CORROUT)
         end
-
+    
         #name is YEAR_JDY_PAIRNAME
         yr,j_day = Dates.year(Date(C.id)), lpad(Dates.dayofyear(Date(C.id)),3,"0")
         p_name = strip(join(deleteat!(split(C.name,"."),[4,8]),"."),'.')
         name = join([yr,j_day,p_name,C.comp],"_")
-
+    
         # create JLD2 file and save correlation
         filename = joinpath(CORROUT,"$(name).jld2")
         file = jldopen(filename, "a+")
@@ -570,30 +514,55 @@ for station in stations
         end
         close(file)
     end
-    types = ["mean", "robust", "pws"]
-    for (ind, stacks) in enumerate([processed_mean, processed_robust])#, processed_pws])
-        stack_type = types[ind]
-        map(x -> save_processed(stacks, "processed/$stack_type/$source_station"))
-    end
-    #Transfer stacked correlations
-    stacked_files = join.("processed/$stack_type/$source_station", readdir("processed/$stack_type/$source_station"))
-    @elapsed pmap(x -> s3_put(aws, bucket2, "processed/$stack_type/$source_station", read(x)), stacked_files)
-
-    ################################### Make and Transfer Node Plots ########################################
-    println("Plotting nodal data now!")
-    types = ["mean", "robust", "pws"]
-    nodes = ["B4", "G1", "G2"]
-    components = ["ZZ", "TT","RR"]
-    for (ind, stacks) in enumerate([processed_mean, processed_robust])#, processed_pws])
-        stack_type = types[ind]
-        for (j,k) in Iterators.product(1:length(nodes), 1:length(components))
-            node, component = nodes[j], components[k]
-            filtered_nodes = filter_nodes(comp_corrs(stacks, component), node)
-            vert_plot(filtered_nodes, source_station, component, node, stack_type)
+    components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
+    # load, sum, stack and rotate correlations
+    function postprocess_corrs(ar_corr_large, df)
+        comp_9 = Array{CorrData,1}(undef, 0)
+        # iterate and stack across components
+        for key in components
+            # Get all correlations for particular component
+            corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
+            # stack and append to array
+            corr_summed = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true)
+            push!(comp_9, corr_summed)
         end
+        # Location patch - only add to 6 stacked corrs
+        map(x -> add_corr_locations(x, df), comp_9)
+        SeisNoise.rotate!(comp_9, comp_9[1].azi, comp_9[1].baz) # rotate
+        # write to disk
+        map(C-> save_processed(C, "processed/$job_name"), comp_9)
+        return comp_9 # to check work - probably don't need to return unless plotting
     end
-
-    # Transfer node plots
-    stacked_plots = glob("*/*$(source_station)*.png", "stack_plots") # Transfer plots from this station only
-    @elapsed pmap(x -> s3_put(aws, bucket2, "stack_plots", read(x)), stacked_plots)
 end
+
+# process raw correlations 
+post_corrs = pmap(x -> postprocess_corrs(x, df), pair_paths_df.files)
+
+#Transfer stacked correlations
+stacked_files = joinpath.("processed/$job_name", readdir("processed/$job_name"))
+@elapsed pmap(x -> s3_put(aws, bucket2, x, read(x)), stacked_files)
+
+
+
+
+
+
+
+# Plotting functionality not yet available - coming soon 
+################################### Make and Transfer Node Plots ########################################
+println("Plotting nodal data now!")
+types = ["mean", "robust", "pws"]
+nodes = ["B4", "G1", "G2"]
+components = ["ZZ", "TT","RR"]
+for (ind, stacks) in enumerate([processed_mean, processed_robust])#, processed_pws])
+    stack_type = types[ind]
+    for (j,k) in Iterators.product(1:length(nodes), 1:length(components))
+        node, component = nodes[j], components[k]
+        filtered_nodes = filter_nodes(comp_corrs(stacks, component), node)
+        vert_plot(filtered_nodes, source_station, component, node, stack_type)
+    end
+end
+
+# Transfer node plots
+stacked_plots = glob("*/*$(source_station)*.png", "stack_plots") # Transfer plots from this station only
+@elapsed pmap(x -> s3_put(aws, bucket2, "stack_plots", read(x)), stacked_plots)
