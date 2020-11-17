@@ -25,6 +25,7 @@ i=1
 yr = Dates.year(days[i])
 path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
 
+###################### Data Download ########################################
 # filelist query for BH and HH 
 filelist_scedc_BH = s3query(aws, days[i], enddate = days[i], network=network, channel=channel1)
 filelist_scedc_HH = s3query(aws, days[i], enddate = days[i], network=network, channel=channel2)
@@ -44,7 +45,6 @@ HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)
 BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
 filelist_dict = merge(HH_dict, BH_dict) # BH dict overwrite HH_dict. This is essentually the union
 filelist_scedc = collect(values(filelist_dict)) # return values as array for download
-# overwrite
 
 
 try
@@ -69,24 +69,107 @@ catch
     println("Error Downloading seisbasin data for $path. Potentially no data available.")
 end
 
-function add_locations(ar::Array{SeisData,1},df::DataFrame)
-    for i in 1:length(ar)
-        try
-            station_name = split(ar[i].name[1],".")[2]
+################### Add Location Data ##############################
+#### add location data
 
-            for j in 1:size(df)[1]
-                if station_name == df[j,2]
-                    ar[i].loc[1].lat = df[j,3]
-                    ar[i].loc[1].lon = df[j,4]
-                    ar[i].loc[1].el = df[j,5]
-                    break
-                end
-            end
-        catch
-            println("Cannot add location to station $i.")
-        end
+# merge source and receiver dataframes to add
+sources = DataFrame(CSV.File("files/source_locations.csv"))
+receivers = DataFrame(CSV.File("files/receiver_locations.csv"))
+all_stations = deepcopy(receivers)
+# all_locations = join(sources, receivers, on = :station, kind = :outer) #should be able to join but not working
+for row in eachrow(sources) # silly loop - plz don't ever iterate rows 
+    push!(all_stations, row)
+end 
+
+# load data
+fpaths = readdir("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)")
+files = joinpath.("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)",fpaths)
+
+T_load = @elapsed ar_file = pmap(x->load_file(x), files[1:200]) # load data - trial sized :) 
+ar = [elt[1] for elt in ar_file if isnothing(elt)==false]
+clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
+
+function LLE_geo(station, df)
+    """ Find station matching location and return geoloc object"""
+    try
+        row = df[(findfirst(x -> x==station, df.station)),:]
+        lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+        geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+        return geo
+    catch 
+        return nothing
     end
 end
+
+function add_locations(ar::Array{SeisData,1},df::DataFrame)
+    bad_indices = Array{Int32 ,1}(undef, 0)
+    for (ind, chn) in enumerate(ar)
+        name = split(chn.name[1],".")[2]
+        geo = LLE_geo(name, df)
+        if !isnothing(geo)
+            chn.loc[1] = geo
+        else
+            push!(bad_indices, ind)
+            println("Station $name doesn't have a location in the dataframe")
+        end
+    end
+    return bad_indices
+end
+bad_indices = add_locations(ar, all_stations)
+ 
+# get only stations which have locations to correlate
+ar2 = deepcopy(ar[setdiff(1:length(ar),bad_indices)]) # probably shouldn't deepcopy - wastes time but cleaner for debugging
+
+###################### Preprocess #######################
+
+T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar2)
+
+ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
+bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
+println("Data for $(days[i]) preprocessed in $T_preprocess seconds.")
+ffts = ffts[bools]
+# ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
+# ar = ar[bools]
+# clean_files = clean_files[bools]
+if any(bools == 0) == true # report if some channels failed in preprocessing
+    num_bad_preprocess = length([bool for bool in bools if bool ==1])
+    println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
+end
+
+###################### Index Pairs and Correlate ###############################
+
+to_correlate = [split(fft.name[1],".")[2] for fft in ffts]
+
+function correlate_indices(to_correlate::Array{String, 1}, sources::Array{String,1})
+    pairs = Array{Array{Int64,1}}(undef, 0) #array of station pairs to correlate
+    source_indices = Array{Int64, 1}(undef, 0)
+    # Get source stations which are present in to_correlate 
+    for (ind, station) in enumerate(to_correlate)
+        loc = findfirst(occursin.(station, sources))
+        if !isnothing(loc)
+            push(source_indices, loc)
+        end
+    end
+    for (ind, source_loc) in 1:length(source_indices)
+         for (jnd, rec_loc) in 1:()
+end
+indices = index_sources(clean_files, sources) # returns indices of sources
+sta_pairs = station_pairs(indices)
+
+# correlate
+T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
+
+println("Data for $(days[i]) correlated in $(T2) seconds!")
+
+
+
+
+
+
+
+
+
+
 
 #Returns indices of source stations at index 1 and non-source stations at index 2
 function index_sources(ar::Array{String,1}, stations::Array{String,1})
@@ -111,6 +194,12 @@ function station_pairs(indices::Array{Array{Int64,1}}) # returns array of statio
     end
     return pairs
 end
+
+
+
+
+
+
 
 
 
