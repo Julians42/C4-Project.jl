@@ -102,27 +102,27 @@ function LLE_geo(station, df)
 end
 
 function add_locations(ar::Array{SeisData,1},df::DataFrame)
-    bad_indices = Array{Int32 ,1}(undef, 0)
+    good_indices = Array{Int32 ,1}(undef, 0)
     for (ind, chn) in enumerate(ar)
         name = split(chn.name[1],".")[2]
         geo = LLE_geo(name, df)
         if !isnothing(geo)
             chn.loc[1] = geo
+            push!(good_indices, ind)
         else
-            push!(bad_indices, ind)
             println("Station $name doesn't have a location in the dataframe")
         end
     end
-    return bad_indices
+    return good_indices
 end
-bad_indices = add_locations(ar, all_stations)
+good_indices = add_locations(ar, all_stations)
  
-# get only stations which have locations to correlate
-ar2 = deepcopy(ar[setdiff(1:length(ar),bad_indices)]) # probably shouldn't deepcopy - wastes time but cleaner for debugging
+# get only stations which have locations in CSV to correlate
+ar = ar[good_indices] # probably shouldn't deepcopy - wastes time but cleaner for debugging
 
 ###################### Preprocess #######################
 
-T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar2)
+T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar)
 
 ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
 bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
@@ -131,7 +131,7 @@ ffts = ffts[bools]
 # ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
 # ar = ar[bools]
 # clean_files = clean_files[bools]
-if any(bools == 0) == true # report if some channels failed in preprocessing
+if any(bools == 0) # report if some channels failed in preprocessing
     num_bad_preprocess = length([bool for bool in bools if bool ==1])
     println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
 end
@@ -143,21 +143,26 @@ to_correlate = [split(fft.name[1],".")[2] for fft in ffts]
 function correlate_indices(to_correlate::Array{String, 1}, sources::Array{String,1})
     pairs = Array{Array{Int64,1}}(undef, 0) #array of station pairs to correlate
     source_indices = Array{Int64, 1}(undef, 0)
-    # Get source stations which are present in to_correlate 
+    # Find stations in successfully preprocessed ffts which are sources
     for (ind, station) in enumerate(to_correlate)
         loc = findfirst(occursin.(station, sources))
         if !isnothing(loc)
             push(source_indices, loc)
         end
     end
+    # get correlation pairs - all sources to all recievers. 
     for (ind, source_loc) in 1:length(source_indices)
-         for (jnd, rec_loc) in 1:()
+        for (jnd, rec_loc) in 1:(to_correlate)
+            push!(pairs, [ind, jnd])
+        end
+    end
+    return pairs 
 end
-indices = index_sources(clean_files, sources) # returns indices of sources
-sta_pairs = station_pairs(indices)
+
+correlate_pairs = correlate_indices(to_correlate, sources)
 
 # correlate
-T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
+T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], correlate_pairs))
 
 println("Data for $(days[i]) correlated in $(T2) seconds!")
 
