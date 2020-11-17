@@ -204,8 +204,9 @@ end
 #2017 minus jan 
 #dates = [["2017-02-01","2017-02-28"],["2017-03-01","2017-03-31"],["2017-04-01","2017-04-30"],["2017-05-01","2017-05-31"],["2017-06-01","2017-06-30"],["2017-07-01","2017-07-31"],["2017-08-01","2017-08-31"],["2017-09-01","2017-09-30"],["2017-10-01","2017-10-31"],["2017-11-01","2017-11-30"],["2017-12-01","2017-12-31"]]
 #2018 minus feb
-dates = [["2018-01-01","2018-01-31"],["2018-03-01","2018-03-31"],["2018-04-01","2018-04-30"],["2018-05-01","2018-05-31"],["2018-06-01","2018-06-30"],["2018-07-01","2018-07-31"],["2018-08-01","2018-08-31"],["2018-09-01","2018-09-30"],["2018-10-01","2018-10-31"],["2018-11-01","2018-11-30"],["2018-12-01","2018-12-31"]]
-
+#dates = [["2019-01-01","2019-01-31"],["2019-02-01","2019-02-28"],["2019-03-01","2019-03-31"],["2019-04-01","2019-04-30"],["2019-05-01","2019-05-31"],["2019-06-01","2019-06-30"]]#,["2018-07-01","2018-07-31"],["2018-08-01","2018-08-31"],["2018-09-01","2018-09-30"],["2018-10-01","2018-10-31"],["2018-11-01","2018-11-30"],["2018-12-01","2018-12-31"]]
+#dates = [["2019-07-01","2019-07-31"],["2019-08-01","2019-08-31"],["2019-09-01","2019-09-30"],["2019-10-01","2019-10-31"],["2019-11-01","2019-11-30"],["2019-12-01","2019-12-31"]]
+dates = [["2019-05-01","2019-05-31"], ["2019-11-01","2019-11-30"],["2019-12-01","2019-12-31"]]
 for mth in dates
     startdate, enddate = mth[1], mth[2]
     days = Date(startdate):Day(1):Date(enddate)
@@ -279,15 +280,9 @@ for mth in dates
 
             # correlate
             T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
-
-            # push to bucket 
+ 
             println("Data for $(days[i]) correlated in $(T2) seconds!")
 
-            # transfer that day of data 
-            # Transfer CSV and Data
-            #s3_put(aws, "seisbasin", "corr_index/$(Dates.year(days[i]))/$(path)_correlation_index.csv",read("files/index/$(Dates.year(days[i]))/$(path)_correlation_index.csv"))
-            #Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", "corr_data/$(join(deleteat!(split(x, "/"),[1]),"/"))", read(x)), corr_paths)
-            #println("$(length(corr_paths)) correlations transfered to $(bucket2) in $Transfer seconds!")
             # Perform cleanup of instance
             rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
         catch e

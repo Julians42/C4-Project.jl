@@ -1,0 +1,215 @@
+# Check WTT, LAF, USC, RUS 
+# Check B1 
+
+@everywhere begin 
+    cc_step, cc_len = 3600, 3600
+    maxlag, fs = 300., 20. # maximum lag time in correlation, sampling frequency
+    freqmin, freqmax = 0.05, 9.9
+    half_win, water_level = 30, 0.01
+    aws = aws_config(region="us-west-2")
+    bucket = "scedc-pds"
+    bucket2 = "seisbasin"
+    network = "CI"
+    channel1 = "BH?"
+    channel2 = "HH?"
+    OUTDIR = "~/data"
+end
+
+startdate, enddate = Date("2019-12-02"), Date("2019-12-03")
+
+# set up params 
+days = Date(startdate):Day(1):Date(enddate)
+@eval @everywhere startdate, enddate = $startdate, $enddate
+@eval @everywhere days = $days
+i=1
+yr = Dates.year(days[i])
+path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+
+# filelist query for BH and HH 
+filelist_scedc_BH = s3query(aws, days[i], enddate = days[i], network=network, channel=channel1)
+filelist_scedc_HH = s3query(aws, days[i], enddate = days[i], network=network, channel=channel2)
+
+# create dictionary and overwrite HH keys with available BH data
+function get_dict_name(file::String)
+    station = convert(String, split(split(file,"/")[end],"_")[1])
+    component = split(file,"/")[end][10]
+    return string(station, "_", component)
+end
+
+BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
+HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
+
+# Convert to dictionary 
+HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
+BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
+filelist_dict = merge(HH_dict, BH_dict) # BH dict overwrite HH_dict. This is essentually the union
+filelist_scedc = collect(values(filelist_dict)) # return values as array for download
+# overwrite
+
+
+try
+    ec2download(aws, bucket, filelist_scedc, OUTDIR)
+    data_avail = true
+catch
+    println("Error Downloading SCEDC data for $path. Potentially no data available.")
+end
+
+dict = collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))
+filelist_basin = Array{String,1}(undef,length(dict))
+#Index to filepath given by the "Key" element of the dictionary
+for ind in 1:length(dict)
+    filelist_basin[ind] = dict[ind]["Key"]
+end
+@eval @everywhere filelist_basin=$filelist_basin
+
+try
+    ec2download(aws, bucket2, filelist_basin, OUTDIR)
+    data_avail = true
+catch
+    println("Error Downloading seisbasin data for $path. Potentially no data available.")
+end
+
+function add_locations(ar::Array{SeisData,1},df::DataFrame)
+    for i in 1:length(ar)
+        try
+            station_name = split(ar[i].name[1],".")[2]
+
+            for j in 1:size(df)[1]
+                if station_name == df[j,2]
+                    ar[i].loc[1].lat = df[j,3]
+                    ar[i].loc[1].lon = df[j,4]
+                    ar[i].loc[1].el = df[j,5]
+                    break
+                end
+            end
+        catch
+            println("Cannot add location to station $i.")
+        end
+    end
+end
+
+#Returns indices of source stations at index 1 and non-source stations at index 2
+function index_sources(ar::Array{String,1}, stations::Array{String,1})
+    indices = Array{Int64,1}(undef,0)
+    for i in 1:length(stations)
+        for j in 1:length(ar)
+            if occursin(stations[i],ar[j]) == true
+                push!(indices, j)
+            end
+        end
+    end
+    not_indices = indices#setdiff(1:length(ar), indices)
+    return([indices,not_indices])
+end
+
+function station_pairs(indices::Array{Array{Int64,1}}) # returns array of station pairs to correlate
+    pairs = Array{Array{Int64,1}}(undef, 0) #array of station pairs to correlate
+    for i in 1:length(indices[1])
+        for j in 1:length(indices[2]) # add distance checking - eg don't add anything over 300 km
+            push!(pairs, [indices[1][i],indices[2][j]])
+        end
+    end
+    return pairs
+end
+
+
+
+############################ Data Download ###################################
+filelist_scedc = s3query(aws, days[i], enddate = days[i], network=network, channel=channel)
+filelist_scedc2 = vcat(filelist_scedc[occursin.("IPT", filelist_scedc)], filelist_scedc[occursin.("CHN", filelist_scedc)])
+@eval @everywhere filelist_scedc=$filelist_scedc
+# Dowload Data and read file paths - replace with ec2stream when available
+data_avail = false
+
+
+#S3 query call for data file information
+
+
+
+####################### Read and Preprocess ####################################
+fpaths = readdir("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)")
+files = joinpath.("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)",fpaths)
+
+T_load = @elapsed ar_file = pmap(x->load_file(x), files) # load data 
+ar = [elt[1] for elt in ar_file if isnothing(elt)==false]
+add_locations(ar, df) # add source locations
+clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
+println("Data for $(days[i]) loaded in $T_load seconds. $(length(ar)) channels to be correlated, with $(length(ar_file)-length(ar)) channels discarded.")
+
+T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar)
+
+ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
+bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
+println("Data for $(days[i]) preprocessed in $T_preprocess seconds.")
+ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
+ar = ar[bools]
+clean_files = clean_files[bools]
+if any(bools == 0) == true # report if some channels failed in preprocessing
+    num_bad_preprocess = length([bool for bool in bools if bool ==1])
+    println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
+end
+
+###################### Index Pairs and Correlate ###############################
+
+indices = index_sources(clean_files, sources) # returns indices of sources
+sta_pairs = station_pairs(indices)
+
+# correlate
+T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
+
+println("Data for $(days[i]) correlated in $(T2) seconds!")
+
+# Perform cleanup of instance
+rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
+
+
+#     # combine single day data to month files by station pair
+#     @eval @everywhere station_pair_names, month_, yr = readdir("/home/ubuntu/CORR"), Dates.monthname(Date(startdate)),Dates.year(Date(startdate)) 
+#     # month = Dates.monthname(Date(startdate)) # get the name of the month
+#     # yr = Dates.year(Date(startdate))
+
+#     if !isdir("home/ubuntu/corr_large/$month_")
+#         mkpath("home/ubuntu/corr_large/$month_")
+#     end
+#     if !isdir("month_index/$yr")
+#         mkpath("month_index/$yr")
+#     end
+
+#     jld_time = @elapsed pmap(x -> write_jld2(x, "corr_large/$yr/$month_"), station_pair_names) # combine corrs by station pair and write to single file 
+
+#     # as station pair names are filenames, we save filenames in a csv to read back during post-process 
+#     df = DataFrame(Files = station_pair_names, paths =[string("corr_large/$yr/$month_/",elt,".jld2") for elt in station_pair_names])
+#     CSV.write("month_index/$yr/$(month_).csv",df)
+
+#     ################### Transfer to S3 ##########################
+
+#     s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
+
+#     month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
+#     Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
+#     println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
+
+
+#     println("$num_corrs total correlations processed")
+#     T_end = Dates.now()
+#     println(T_end-T_start)
+#     ############# Clean Up #################
+#     rm("CORR", recursive=true) # Remove single correlation data 
+#     rm("corr_large/$yr/$month_", recursive=true) #remove large correlation data
+# end
+
+
+BH = Set([split(split(file,"/")[end],"_")[1] for file in files2])
+HH = Set([split(split(file,"/")[end],"_")[1] for file in files1])
+issubset(BH, HH)
+
+function index_sources(ar::Array{String,1})
+    """ Index function for n^2 problem """
+    pairs = Array{Int64,1}(undef,0)
+    for i in 1:(length(ar)-1)
+        for j in (i+1):length(ar)
+            push!(pairs, [i ,j])
+        end
+    end
+    return pairs
+end

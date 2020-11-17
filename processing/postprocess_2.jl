@@ -21,157 +21,7 @@ Pkg.build("GR")
 
 #Add procs to access multiple cores
 addprocs()
-
-function indexer(ar::Array{String,1}, stations::Array{String,1})
-    """
-        Returns Indices of stations and recievers (others) in ar using occursin
-    """
-    indices = Array{Int64,1}(undef,0)
-    for i in 1:length(stations)
-        for j in 1:length(ar)
-            if occursin(stations[i],ar[j]) == true
-                push!(indices, j)
-            end
-        end
-    end
-    not_indices = setdiff(1:length(ar), indices)
-    return([indices,not_indices])
-end
-
-function index_download(files::Array{String,1}, wanted_stations::Array{String,1})
-    """
-        Returns Indices of stations and recievers (others) in ar using occursin
-    """
-    source_stations = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
-                        ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI"]
-    all_indices = Array{Int64,1}(undef,0)
-    wanted_indices = Array{Int64,1}(undef,0)
-    for i in 1:length(files)
-        if any(occursin.(source_stations, files[i])) == true
-            push!(all_indices, i)
-        end
-        if any(occursin.(wanted_stations, files[i])) == true
-            push!(wanted_indices, i)
-        end
-    end
-    reciever_indices = setdiff(1:length(files), all_indices)
-    return([wanted_indices,reciever_indices])
-end
-
-function list_corrs(csv_filelist::String, sources::Array{String,1}, path::String) # sources ex: ["IPT"]
-    """
-        Takes a seisbasin csv filename, and a list of sources 
-        Returns an array of day-specific corr_data filepaths ready for download 
-        via SeisNoise's ec2download fucntion
-    """
-    corr_info = CSV.read(csv_filelist) # Read in csv file 
-    names = Array{String,1}(undef,0)
-    for i in 1:size(corr_info)[1]
-        location = corr_info.location[i]
-        if ismissing(location) == true #Deal with empty location information
-            location = ""
-        end
-        name = join([corr_info.network[i],corr_info.station[i], location,corr_info.channel[i]],".")
-        push!(names, name)
-    end
-    #Index for correlation pairs - sources MUST be the same as sources used during correlations, selected sources should be a subset array 
-    source_index = index_download(names, sources)
-
-    # Create DataFrame to store the names of the correlations with components 
-    corr_pairs = DataFrame(corr_name = String[], comp = String[]) #Pairs is length of sources * receivers
-    for (i, source) in enumerate(source_index[1])
-        for (j, reciever) in enumerate(source_index[2])
-            pth = strip(join(vcat(split(names[source],".")[1:3],split(names[reciever],".")[1:3]),"."),'.')
-            comp = join([names[source][end],names[reciever][end]],"")
-            push!(corr_pairs, Dict(:corr_name => "$pth", :comp => "$comp"))
-        end
-    end
-    # Make seisbasin file path
-    file_paths = ["corr_data/$(corr_pairs.corr_name[i])/$(corr_pairs.comp[i])/$(path)_$(corr_pairs.corr_name[i]).jld2" for i in 1:length(corr_pairs.corr_name)]
-    #Return list of filepaths
-    return file_paths
-end
-@everywhere begin
-    using SeisNoise, SeisIO, Statistics
-    function load_filelist(file::String) # load correlations
-        try 
-            elt = load_corr(file, convert(String,split(file,"/")[3]))
-            bool = true
-            return [elt, bool]
-        catch e
-            print(e)
-            bool = false
-            return [nothing, bool]
-        end
-    end
-    function cc_medianmute!(C::CorrData, cc_medianmute_α::Float64 = 10.0)
-        C.corr, inds = cc_medianmute(C.corr, cc_medianmute_α)
-        C.t = remove_medianmute(C, inds)
-        return nothing
-    end
-    function cc_medianmute(A::AbstractArray, cc_medianmute_α::Float64 = 10.0)
-        #1. compute median of maximum amplitude of all corrs
-        T, N = size(A)
-        cc_maxamp = vec(maximum(abs.(A), dims=1))
-        cc_medianmax = median(cc_maxamp)
-        inds = findall(x-> x <= cc_medianmute_α*cc_medianmax,cc_maxamp)
-        #NOTE: you cannot unbind entire array, so remove_nanandzerocol! is not used here.
-        return A[:, inds], inds
-    end
-    remove_medianmute(C::CorrData, inds) = (return C.t[inds])
-    function load_sum_stack(paths::String, len::Float64)
-        try
-            directory = joinpath.(paths,readdir(paths))
-            single_corrs = load_corr.(directory, convert(String,split(paths,"/")[end]))
-            single_corrs = [corr for corr in single_corrs if !isnothing(corr)]
-            single_temp = sum(shorten.(single_corrs,len))
-            #cc_medianmute!(single_temp,2.)
-            pair_stack = SeisNoise.stack!(single_temp, allstack=true)
-            return pair_stack
-        catch e
-            println(e)
-        end
-    end
-    function load_sum_stack_robust(paths::String, len::Float64)
-        try
-            directory = joinpath.(paths,readdir(paths))
-            single_corrs = load_corr.(directory, convert(String,split(paths,"/")[end]))
-            single_corrs = [corr for corr in single_corrs if !isnothing(corr)]
-            single_temp = sum(shorten.(single_corrs,len))
-            #cc_medianmute!(single_temp,2.)
-            pair_stack = SeisNoise.robuststack!(single_temp)
-            return pair_stack
-        catch e
-            println(e)
-        end
-    end
-    function load_sum_stack_pws(paths::String, len::Float64)
-        try
-            directory = joinpath.(paths,readdir(paths))
-            single_corrs = load_corr.(directory, convert(String,split(paths,"/")[end]))
-            single_corrs = [corr for corr in single_corrs if !isnothing(corr)]
-            single_temp = sum(shorten.(single_corrs,len))
-            #cc_medianmute!(single_temp,2.)
-            pair_stack = SeisNoise.pws!(single_temp)
-            return pair_stack
-        catch e
-            println(e)
-        end
-    end
-end
-
-
-#### add in some error checking bro
-function s3_file_map(aws::AWSConfig,bucket::String,filein::String,fileout::String)
-    try
-        s3_get_file(aws, bucket, filein, fileout)
-        println("Downloading file: $filein       \r")
-    catch 
-        print("File $filein does not exist!")
-    end
-	return nothing
-end
-
+@everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob 
 #@everywhere begin # helper functions for safe correlation download
  
 """
@@ -411,8 +261,8 @@ end
     aws = aws_config(region="us-west-2")
     bucket = "scedc-pds"
     bucket2 = "seisbasin"
-    startdate = "2017-01-01" # Select Start Date
-    enddate = "2017-06-30" # Select End Date
+    startdate = "2019-01-01" # Select Start Date
+    enddate = "2019-12-31" # Select End Date
     days = Date(startdate):Day(1):Date(enddate)
 end
 
@@ -430,12 +280,41 @@ stations = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
 df = CSV.File("files/all_locations_socal.csv") |> DataFrame! 
 @eval @everywhere df = $df
-job_name = "linear_2017_h5"
+job_name = "linear/2019"
 @eval @everywhere job_name = $job_name
 ############################# Get files for unique station pair ####################
 
 to_download = unique(Iterators.flatten([DataFrame(CSV.File(file)).paths for file in month_fnames]))
+
 safe_download(aws, bucket2, to_download, "~/")
+
+
+
+
+# @everywhere begin
+#     function s3_file_map(aws::AWSConfig,seisbucket::String,filein::String,fileout::String)
+#         try
+#             s3_get_file(aws, seisbucket, filein, fileout)
+#             println("Downloading file: $filein       \r")
+#             return nothing
+#         catch e
+#             println("Unable to download file $filein")
+#         end
+#     end
+# end
+# temp_download = [x for x in to_download if occursin("February", x)==true]
+# pmap(x-> s3_file_map(aws, bucket2, x, x), temp_download)
+
+
+
+# safe_download(aws, bucket2, temp_download, "~/")
+
+
+
+
+
+
+
 
 function csv_merge(large_index = Array{String, 1})
     """Returns dataframe with unique station pairs and csvs containing that station pair"""
@@ -461,7 +340,7 @@ end
 pair_paths_df = csv_merge(month_fnames)
 
 @everywhere begin 
-    using DataFrames, JLD2
+    using DataFrames, JLD2, SeisIO, SeisNoise
     # get lat, lon, and elevation (LLE) for station 
     function LLE(station, df)
         row = df[(findall(x -> x==station, df.station)),:]
@@ -485,11 +364,16 @@ pair_paths_df = csv_merge(month_fnames)
     end
     # gets array of corrs for particular file
     function corr_load(corr_large, key)
-        jld = jldopen(corr_large, "r")
-        files = keys(jld[key])
-        corrs_comp = [jld["$key/$file"] for file in files]
-        close(jld)
-        return corrs_comp
+        try
+            jld = jldopen(corr_large, "r")
+            files = keys(jld[key])
+            corrs_comp = [jld["$key/$file"] for file in files]
+            close(jld)
+            return corrs_comp
+        catch e
+            println(e)
+            println("Likely $corr_large does not contain some components.")
+        end
     end
     function save_hdf5(C::CorrData, name)
         S=SeisData(1)
@@ -512,10 +396,10 @@ pair_paths_df = csv_merge(month_fnames)
             mkpath(CORROUT)
         end
     
-        #name is YEAR_JDY_PAIRNAME
-        yr,j_day = Dates.year(Date(C.id)), lpad(Dates.dayofyear(Date(C.id)),3,"0")
+        #name is YEAR_PAIRNAME_COMP.h5
+        yr = Dates.year(Date(C.id))
         p_name = strip(join(deleteat!(split(C.name,"."),[4,8]),"."),'.')
-        name = join([yr,j_day,p_name,C.comp],"_")
+        name = join([yr,p_name,C.comp],"_")
     
         # create JLD2 file and save correlation
         filename = joinpath(CORROUT,"$(name).h5")
@@ -525,21 +409,30 @@ pair_paths_df = csv_merge(month_fnames)
     components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
     # load, sum, stack and rotate correlations
     function postprocess_corrs(ar_corr_large, df)
-        comp_9 = Array{CorrData,1}(undef, 0)
-        # iterate and stack across components
-        for key in components
-            # Get all correlations for particular component
-            corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
-            # stack and append to array
-            corr_summed = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true)
-            push!(comp_9, corr_summed)
+        try
+            if any(occursin.(".GATR.", ar_corr_large)) == true # crappy GATR station data - should catch earlier
+                return nothing
+            end
+            comp_9 = Array{CorrData,1}(undef, 0)
+            # iterate and stack across components
+            for key in components
+                # Get all correlations for particular component
+                corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
+                #filter!(x -> x! = nothing, corr_singles)
+                # stack and append to array
+                corr_summed = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true)
+                push!(comp_9, corr_summed)
+            end
+            # Location patch - only add to 6 stacked corrs
+            map(x -> add_corr_locations(x, df), comp_9)
+            SeisNoise.rotate!(comp_9, comp_9[1].azi, comp_9[1].baz) # rotate
+            # write to disk
+            map(C-> save_processed(C, "processed/$job_name"), comp_9)
+            return comp_9 # to check work - probably don't need to return unless plotting
+        catch e
+            println(e)
+            return nothing
         end
-        # Location patch - only add to 6 stacked corrs
-        map(x -> add_corr_locations(x, df), comp_9)
-        SeisNoise.rotate!(comp_9, comp_9[1].azi, comp_9[1].baz) # rotate
-        # write to disk
-        map(C-> save_processed(C, "processed/$job_name"), comp_9)
-        return comp_9 # to check work - probably don't need to return unless plotting
     end
 end
 
