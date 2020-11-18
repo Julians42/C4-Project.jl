@@ -8,7 +8,13 @@ Pkg.build("GR")
 addprocs()
 
 # Read in station locations and list source stations
-df = CSV.File("files/all_locations_socal.csv") |> DataFrame! 
+sources = DataFrame(CSV.File("files/source_locations.csv"))
+receivers = DataFrame(CSV.File("files/receiver_locations_minusB2B3.csv"))
+all_stations = deepcopy(receivers)
+# all_locations = join(sources, receivers, on = :station, kind = :outer) #should be able to join but not working
+for row in eachrow(sources) # silly loop - plz don't ever iterate rows 
+    push!(all_stations, row)
+end 
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
 
@@ -143,48 +149,81 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
     end
 end
 
+function divide_months(t_start::String, t_end::String)
+    """ Return all month windows """
+    startdate, enddate = Date(t_start), Date(t_end)
+    start_ym, end_ym = Dates.yearmonth(startdate), Dates.yearmonth(enddate)
+    last_first, last_last = Dates.daysinmonth(startdate), Dates.daysinmonth(enddate)
+    m_start1, m_start2 = Date("$(start_ym[1])-$(start_ym[2])-01"), Date("$(end_ym[1])-$(end_ym[2])-01") # start of first/last month
+    m_end1, m_end2 = Date("$(start_ym[1])-$(start_ym[2])-$last_first"), Date("$(end_ym[1])-$(end_ym[2])-$last_last") # end of first/last month
+    start_range = m_start1:Month(1):m_start2 # month start values
+    end_range = m_end1:Month(1):m_end2 # month end values
+    dates = [[start_range[ind], end_range[ind]] for ind in 1:length(start_range)] # start and end of each month
+    return dates
+end
+
 #Add location from dataframe to array 
+function LLE_geo(station, df)
+    """ Find station matching location and return geoloc object"""
+    try
+        row = df[(findfirst(x -> x==station, df.station)),:]
+        lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+        geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+        return geo
+    catch 
+        return nothing
+    end
+end
+
 function add_locations(ar::Array{SeisData,1},df::DataFrame)
-    for i in 1:length(ar)
-        try
-            station_name = split(ar[i].name[1],".")[2]
-            for j in 1:size(df)[1]
-                if station_name == df[j,2]
-                    ar[i].loc[1].lat = df[j,3]
-                    ar[i].loc[1].lon = df[j,4]
-                    ar[i].loc[1].el = df[j,5]
-                    break
-                end
-            end
-        catch
-            println("Cannot add location to station $i.")
+    """ Adds locations to array of seisdata from a dataframe """
+    good_indices = Array{Int32 ,1}(undef, 0)
+    for (ind, chn) in enumerate(ar)
+        name = split(chn.name[1],".")[2]
+        geo = LLE_geo(name, df)
+        if !isnothing(geo)
+            chn.loc[1] = geo
+            push!(good_indices, ind)
+        else
+            #println("Station $name doesn't have a location in the dataframe")
         end
     end
+    return good_indices
 end
 
 #Returns indices of source stations at index 1 and non-source stations at index 2
-function index_sources(ar::Array{String,1}, stations::Array{String,1})
-    indices = Array{Int64,1}(undef,0)
-    for i in 1:length(stations)
-        for j in 1:length(ar)
-            if occursin(stations[i],ar[j]) == true
-                push!(indices, j)
-            end
+function correlate_indices(to_correlate::Array{String, 1}, sources::Array{String,1})
+    pairs = Array{Array{Int64,1}}(undef, 0) #array of station pairs to correlate
+    source_indices = Array{Int64, 1}(undef, 0)
+    # Find stations in successfully preprocessed ffts which are sources
+    for (ind, station) in enumerate(to_correlate)
+        loc = findfirst(occursin.(station[1:end-1], sources))
+        if !isnothing(loc)
+            push!(source_indices, ind)
         end
     end
-    # we choose to correlate with sources also as recievers, uncomment for sources not used as recievers
-    not_indices = indices#setdiff(1:length(ar), indices) 
-    return([indices,not_indices])
+    # get correlation pairs - all sources to all recievers. 
+    for source_loc in source_indices
+        for (ind, rec_loc) in enumerate(to_correlate)
+            push!(pairs, [source_loc, ind])
+        end
+    end
+    return pairs 
 end
 
-function station_pairs(indices::Array{Array{Int64,1}}) # returns array of station pairs to correlate
-    pairs = Array{Array{Int64,1}}(undef, 0) #array of station pairs to correlate
-    for i in 1:length(indices[1])
-        for j in 1:length(indices[2]) # add distance checking - eg don't add anything over 300 km
-            push!(pairs, [indices[1][i],indices[2][j]])
-        end
+function get_dict_name(file::String)
+    station = convert(String, split(split(file,"/")[end],"_")[1])
+    component = split(file,"/")[end][10]
+    return string(station, "_", component)
+end
+
+function foldersize(dir=".")
+    """ returns total size of folder in GB """
+    size = 0
+    for (root, dirs, files) in walkdir(dir)
+        size += sum(map(filesize, joinpath.(root, files)))
     end
-    return pairs
+    return size*10e-10
 end
 
 #coeffs - send to all cores
@@ -197,23 +236,22 @@ end
     bucket = "scedc-pds"
     bucket2 = "seisbasin"
     network = "CI"
-    channel = "BH?"
+    channel1 = "BH?"
+    channel2 = "HH?"
     OUTDIR = "~/data"
 end
 
-# Select for months
-#2017 minus jan 
-#dates = [["2017-02-01","2017-02-28"],["2017-03-01","2017-03-31"],["2017-04-01","2017-04-30"],["2017-05-01","2017-05-31"],["2017-06-01","2017-06-30"],["2017-07-01","2017-07-31"],["2017-08-01","2017-08-31"],["2017-09-01","2017-09-30"],["2017-10-01","2017-10-31"],["2017-11-01","2017-11-30"],["2017-12-01","2017-12-31"]]
-#2018 minus feb
-#dates = [["2019-01-01","2019-01-31"],["2019-02-01","2019-02-28"],["2019-03-01","2019-03-31"],["2019-04-01","2019-04-30"],["2019-05-01","2019-05-31"],["2019-06-01","2019-06-30"]]#,["2018-07-01","2018-07-31"],["2018-08-01","2018-08-31"],["2018-09-01","2018-09-30"],["2018-10-01","2018-10-31"],["2018-11-01","2018-11-30"],["2018-12-01","2018-12-31"]]
-#dates = [["2019-07-01","2019-07-31"],["2019-08-01","2019-08-31"],["2019-09-01","2019-09-30"],["2019-10-01","2019-10-31"],["2019-11-01","2019-11-30"],["2019-12-01","2019-12-31"]]
-dates = [["2019-05-01","2019-05-31"], ["2019-11-01","2019-11-30"],["2019-12-01","2019-12-31"]]
+# select start/ enddate (Default calculates for entire month eg start_date on 003 rounds to 001)
+start_date, end_date = "2019-01-01", "2019-01-31"
+dates = divide_months(start_date, end_date)
+summary = DataFrame(Year = Int[], Month = String[], channels = Int[], correlations = Int[], time = Millisecond[], size_raw = Float64[], size_corr = Float64[])
+#Dict(:Year =  , :Month =  , :channels =  , correlations =  , time = )
 for mth in dates
     startdate, enddate = mth[1], mth[2]
     days = Date(startdate):Day(1):Date(enddate)
     @eval @everywhere startdate, enddate = $startdate, $enddate
     @eval @everywhere days = $days
-    num_corrs = 0
+    num_channels, num_corrs, raw_size, corr_size = 0, 0, 0, 0
     T_start = Dates.now()
     for i in 1:length(days)
         try
@@ -221,34 +259,42 @@ for mth in dates
             path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
 
             ############################ Data Download ###################################
-            filelist_scedc = s3query(aws, days[i], enddate = days[i], network=network, channel=channel)
-            @eval @everywhere filelist_scedc=$filelist_scedc
-            # Dowload Data and read file paths - replace with ec2stream when available
-            data_avail = false
+            # get BH and HH data - BH is smaller, but doesn't contain all stations
+            ar_filelist = pmap(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
+            filelist_scedc_BH = ar_filelist[1]
+            filelist_scedc_HH = ar_filelist[2]
+            # create dictionary and overwrite HH keys with available BH data
+
+
+            BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
+            HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
+
+            # Convert to dictionary 
+            HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
+            BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
+            filelist_dict = merge(HH_dict, BH_dict) # BH dict overwrite HH_dict. This is essentually the union
+            filelist_scedc = collect(values(filelist_dict)) # return values as array for download
+            
             try
                 ec2download(aws, bucket, filelist_scedc, OUTDIR)
                 data_avail = true
             catch
                 println("Error Downloading SCEDC data for $path. Potentially no data available.")
             end
-
-            #S3 query call for data file information
+            
             dict = collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))
             filelist_basin = Array{String,1}(undef,length(dict))
             #Index to filepath given by the "Key" element of the dictionary
-            for i in 1:length(dict)
-                filelist_basin[i] = dict[i]["Key"]
+            for ind in 1:length(dict)
+                filelist_basin[ind] = dict[ind]["Key"]
             end
             @eval @everywhere filelist_basin=$filelist_basin
-
+            
             try
                 ec2download(aws, bucket2, filelist_basin, OUTDIR)
                 data_avail = true
             catch
                 println("Error Downloading seisbasin data for $path. Potentially no data available.")
-            end
-            if data_avail == false # If there isn't data for that day from niether SCEDC or Seisbasin proceed to next day
-                continue 
             end
 
             ####################### Read and Preprocess ####################################
@@ -256,9 +302,10 @@ for mth in dates
             files = joinpath.("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)",fpaths)
             
             T_load = @elapsed ar_file = pmap(x->load_file(x), files) # load data 
-            ar = [elt[1] for elt in ar_file if isnothing(elt)==false]
-            add_locations(ar, df) # add source locations
-            clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
+            ar = [elt[1] for elt in ar_file if isnothing(elt)==false];
+            good_indices = add_locations(ar, all_stations) # add source locations
+            ar = ar[good_indices] # we only want to correlate data which has locations 
+            #clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
             println("Data for $(days[i]) loaded in $T_load seconds. $(length(ar)) channels to be correlated, with $(length(ar_file)-length(ar)) channels discarded.")
 
             T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar)
@@ -266,23 +313,27 @@ for mth in dates
             ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
             bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
             println("Data for $(days[i]) preprocessed in $T_preprocess seconds.")
-            ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
-            ar = ar[bools]
-            clean_files = clean_files[bools]
-            if any(bools == 0) == true # report if some channels failed in preprocessing
+            #ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
+            ffts = ffts[bools]
+            num_channels += length(ffts) # add number of channels to be processed to summary 
+            if any(bools == 0) # report if some channels failed in preprocessing
                 num_bad_preprocess = length([bool for bool in bools if bool ==1])
                 println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
             end
 
             ###################### Index Pairs and Correlate ###############################
-            
-            indices = index_sources(clean_files, sources) # returns indices of sources
-            sta_pairs = station_pairs(indices)
+            # get station names to correlate
+            to_correlate = [split(convert(String,fft.name),".")[2]*fft.name[end] for fft in ffts]
+            # check station names for source name, then pair all stations to all recievers (including sources)
+            correlate_pairs = correlate_indices(to_correlate, sources)
+            num_corrs += length(correlate_pairs) # add total number of correlations to summary
 
             # correlate
             T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
  
             println("Data for $(days[i]) correlated in $(T2) seconds!")
+
+            raw_size +=foldersize("data")
 
             # Perform cleanup of instance
             rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
@@ -311,152 +362,29 @@ for mth in dates
 
     ################### Transfer to S3 ##########################
 
-    s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
+    # s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
+
+    # month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
+    # Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
+    # println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
+
+    # Delete for actual run 
+    s3_put(aws, "seisbasin", "test/month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
 
     month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
-    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
+    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", joinpath("test", x), read(x)), month_files)
     println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
-
+    corr_size +=foldersize("corr_large/$yr/$month_")
 
     println("$num_corrs total correlations processed")
+
+    ############# Clean Up and write to summary file #################
+    rm("CORR", recursive=true) # Remove single correlation data 
+    rm("corr_large/$yr/$month_", recursive=true) #remove large correlation data
     T_end = Dates.now()
-    println(T_end-T_start)
-    ############# Clean Up #################
-    rm("CORR", recursive=true) # Remove single correlation data 
-    rm("corr_large/$yr/$month_", recursive=true) #remove large correlation data
+    t_diff = T_end-T_start 
+    m_dict = Dict(:Year =>  yr, :Month =>  month_, :channels =>  num_channels, :correlations =>  num_corrs, :time => t_diff, :size_raw => float(raw_size), :size_corr => float(corr_size))
+    push!(summary, m_dict)
 end
-
-
-
-
-
-
-
-
-
-############### Design goal is below ##################
-# currently struggling to implement because of differences between mapping within functions
-# and outside of them 
-
-################## Run Jobs ####################
-Jan_2017 = @elapsed SeisCore("2017-01-01","2017-01-02")
-# Jan_2017 = @elapsed SeisCore("2017-01-01","2017-01-31") # January 2017
-# Feb_2017 = @elapsed SeisCore("2017-02-01","2017-02-28") # February 2017
-# Mar_2017 = @elapsed SeisCore("2017-03-31","2017-03-31") # March 2017
-################ Month Correlate Function ##################### --- DOESN'T WORK
-function SeisCore(startdate::String, enddate::String)
-    @everywhere startdate = $startdate
-    @everywhere enddate = $enddate
-    days = Date(startdate):Day(1):Date(enddate)
-    @everywhere days = $days
-    num_corrs = 0
-    for i in 1:length(days) # loop through days 
-        try # to catch any uncaught errors - will loose day if these come up (found ~2-3/year)
-            yr = Dates.year(days[i])
-            path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
-
-            ############################ Data Download ###################################
-            filelist_scedc = s3query(aws, days[i], enddate = days[i], network=network, channel=channel)
-            @everywhere filelist_scedc=$filelist_scedc
-            # Dowload Data and read file paths - replace with ec2stream when available
-            data_avail = false
-            try
-                ec2download(aws, bucket, filelist_scedc, OUTDIR)
-                data_avail = true
-            catch
-                println("Error Downloading SCEDC data for $path. Potentially no data available.")
-            end
-
-            #S3 query call for data file information
-            dict = collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))
-            filelist_basin = Array{String,1}(undef,length(dict))
-            #Index to filepath given by the "Key" element of the dictionary
-            for i in 1:length(dict)
-                filelist_basin[i] = dict[i]["Key"]
-            end
-            @everywhere filelist_basin=$filelist_basin
-
-            try
-                ec2download(aws, bucket2, filelist_basin, OUTDIR)
-                data_avail = true
-            catch
-                println("Error Downloading seisbasin data for $path. Potentially no data available.")
-            end
-            if data_avail == false # If there isn't data for that day from niether SCEDC or Seisbasin proceed to next day
-                continue 
-            end
-            println("Data Download OK") ##########
-            ####################### Read and Preprocess ####################################
-            fpaths = readdir("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)")
-            files = joinpath.("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)",fpaths)
-            print
-            T_load = @elapsed ar_file = pmap(x->load_file(x), files) # load data 
-            ar = [elt[1] for elt in ar_file if isnothing(elt)==false]
-            add_locations(ar, df) # add source locations
-            clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
-            println("Data for $(days[i]) loaded in $T_load seconds. $(length(ar)) channels to be correlated, with $(length(ar_file)-length(ar)) channels discarded.")
-            println("Load OK")
-            T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar)
-            println("Preprocess Ran")
-            ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
-            bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
-            println("Data for $(days[i]) preprocessed in $T_preprocess seconds.")
-            ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
-            ar = ar[bools]
-            clean_files = clean_files[bools]
-            if any(bools == 0) == true # report if some channels failed in preprocessing
-                num_bad_preprocess = length([bool for bool in bools if bool ==1])
-                println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
-            end
-
-            ###################### Index Pairs and Correlate ###############################
-            
-            indices = index_sources(clean_files, sources) # returns indices of sources
-            sta_pairs = station_pairs(indices)
-
-            # correlate
-            T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
-
-            # push to bucket 
-            println("Data for $(days[i]) correlated in $(T2) seconds!")
-
-            rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
-        catch e
-            print(e)
-            print("Failure to process correlations for $(days[i]) - unknown error. Continuing to next day")
-            continue
-        end
-    end
-
-    # combine single day data to month files by station pair
-    @everywhere station_pair_names, month_, yr = readdir("/home/ubuntu/CORR"), Dates.monthname(Date(startdate)),Dates.year(Date(startdate)) 
-
-
-    if !isdir("home/ubuntu/corr_large/$yr/$month_")
-        mkpath("home/ubuntu/corr_large/$yr/$month_")
-    end
-    if !isdir("month_index/$yr")
-        mkpath("month_index/$yr")
-    end
-
-    jld_time = @elapsed pmap(x -> write_jld2(x, "corr_large/$yr/$month_"), station_pair_names) # combine corrs by station pair and write to single file 
-
-    # as station pair names are filenames, we save filenames in a csv to read back during post-process 
-    df = DataFrame(Files = station_pair_names, paths =[string("corr_large/$yr/$month_/",elt,".jld2") for elt in station_pair_names])
-    CSV.write("month_index/$yr/$(month_).csv",df)
-
-    ################### Transfer to S3 ##########################
-
-    s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
-
-    month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$month"))
-    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
-    println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
-
-    println("$num_corrs total correlations processed")
-
-    ############### Corr Cleanup ####################
-    rm("CORR", recursive=true) # Remove single correlation data 
-    rm("corr_large/$yr/$month_", recursive=true) #remove large correlation data
-end
-
+CSV.write("summary$yr.csv", summary)
+s3_put(aws, "seisbasin", "summary/summary$yr.csv", read("summary$yr.csv"))
