@@ -375,19 +375,35 @@ pair_paths_df = csv_merge(month_fnames)
             println("Likely $corr_large does not contain some components.")
         end
     end
-    function save_hdf5(C::CorrData, name)
-        S=SeisData(1)
-        fill!(S.id,C.id)
-        fill!(S.name,C.name)
-        fill!(S.loc,C.loc)
-        fill!(S.fs,C.fs)
-        fill!(S.misc,Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+    # function save_hdf5(C::CorrData, name)
+    #     S=SeisData(1)
+    #     fill!(S.id,C.id)
+    #     fill!(S.name,C.name)
+    #     fill!(S.loc,C.loc)
+    #     fill!(S.fs,C.fs)
+    #     fill!(S.misc,Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+    #     ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),("dist",C.dist),
+    #     ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag)]))
+    #     # here i should convert the *t* as a date into a unix time.
+    #     S.t[1] = [1 convert(Int,C.t[1] * 1e6); size(C.corr,1) 0]
+    #     fill!(S.x,C.corr[:])
+    #     write_hdf5(name,S)
+    # end
+    function save_hdf5(C::CorrData, name, stacktype)
+        T = u2d(C.t[1]) # get starttime
+        D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
         ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),("dist",C.dist),
-        ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag)]))
-        # here i should convert the *t* as a date into a unix time.
-        S.t[1] = [1 convert(Int,C.t[1] * 1e6); size(C.corr,1) 0]
-        fill!(S.x,C.corr[:])
-        write_hdf5(name,S)
+        ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag),("starttime",T)])
+        # write metadata and add stacktypes
+        h5open(name,"w") do file
+            m = g_create(file, "meta")
+            m["meta"] = D
+            g=g_create(file,"stack")
+            # g[C.comp]=C.corr[:]
+            # attrs(g)["Description"] = "linear stack"
+            h=g_create(g,stacktype)
+            h[C.comp]=C.corr[:]
+        end
     end
     function save_processed(C::CorrData, CORROUT::String)
         # check if CORRDIR exists
@@ -413,22 +429,30 @@ pair_paths_df = csv_merge(month_fnames)
             if any(occursin.(".GATR.", ar_corr_large)) == true # crappy GATR station data - should catch earlier
                 return nothing
             end
-            comp_9 = Array{CorrData,1}(undef, 0)
+            comp_mean = Array{CorrData,1}(undef, 0)
+            comp_pws = Array{CorrData,1}(undef, 0)
+            comp_robust = Array{CorrData,1}(undef, 0)
             # iterate and stack across components
             for key in components
                 # Get all correlations for particular component
                 corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
                 #filter!(x -> x! = nothing, corr_singles)
                 # stack and append to array
-                corr_summed = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true)
-                push!(comp_9, corr_summed)
+                corr_mean = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true, stacktype=mean)
+                corr_pws = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true, stacktype=pws)
+                corr_robust = SeisNoise.stack(sum(shorten.(corr_singles, 300.)), allstack=true, stacktype=robuststack)
+                push!(comp_mean, corr_mean)
+                push!(comp_pws, corr_pws)
+                push!(comp_robust, corr_robust)
             end
             # Location patch - only add to 6 stacked corrs
-            map(x -> add_corr_locations(x, df), comp_9)
-            SeisNoise.rotate!(comp_9, comp_9[1].azi, comp_9[1].baz) # rotate
+            for stack in [comp_mean, comp_pws, comp_robust]
+                map(x -> add_corr_locations(x, df), stack)
+                SeisNoise.rotate!(stack, stack[1].azi, stack[1].baz) # rotate
             # write to disk
-            map(C-> save_processed(C, "processed/$job_name"), comp_9)
-            return comp_9 # to check work - probably don't need to return unless plotting
+                map(C-> save_processed(C, "processed/$job_name"), stack)
+            end
+            return [comp_mean, comp_pws, comp_robust] # to check work - probably don't need to return unless plotting
         catch e
             println(e)
             return nothing

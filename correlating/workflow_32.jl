@@ -1,4 +1,4 @@
-T = @elapsed using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Statistics, PyCall, Glob, StructArrays, AWSS3
+T = @elapsed using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Statistics, PyCall, Glob, StructArrays, AWSS3, SeisIO.SEED
 
 using Pkg 
 ENV["GR"] = ""
@@ -8,17 +8,11 @@ Pkg.build("GR")
 addprocs()
 
 # Read in station locations and list source stations
-sources = DataFrame(CSV.File("files/source_locations.csv"))
-receivers = DataFrame(CSV.File("files/receiver_locations_minusB2B3.csv"))
-all_stations = deepcopy(receivers)
-# all_locations = join(sources, receivers, on = :station, kind = :outer) #should be able to join but not working
-for row in eachrow(sources) # silly loop - plz don't ever iterate rows 
-    push!(all_stations, row)
-end 
+all_stations = DataFrame(CSV.File("files/full_socal.csv"))
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
 
-@everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob 
+@everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob, SeisIO.SEED
 @everywhere begin 
     function is_window(C::SeisData, cc_len::Int64)
         """ Returns true if data has large enough ungapped window for correlation """
@@ -33,7 +27,7 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         gaps = size(data.t[1])[1] # N-2 gaps (eg gaps = 12 tests for 10 gaps)
         pts = size(data.x[1])[1]
         fs_temp = data.fs[1]
-        if gaps < 12 && is_window(data, cc_len) == true # If few gaps and sufficient (2/3) data present, data is clean
+        if gaps < 25 && is_window(data, cc_len) == true # If few gaps and sufficient (2/3) data present, data is clean
             return [data, file]
         end
     end
@@ -213,7 +207,7 @@ end
 
 function get_dict_name(file::String)
     station = convert(String, split(split(file,"/")[end],"_")[1])
-    component = split(file,"/")[end][10]
+    component = split(file,"/")[end][10:12]
     return string(station, "_", component)
 end
 
@@ -242,7 +236,7 @@ end
 end
 
 # select start/ enddate (Default calculates for entire month eg start_date on 003 rounds to 001)
-start_date, end_date = "2019-01-01", "2019-01-31"
+start_date, end_date = "2019-01-01", "2019-12-31"
 dates = divide_months(start_date, end_date)
 summary = DataFrame(Year = Int[], Month = String[], channels = Int[], correlations = Int[], time = Millisecond[], size_raw = Float64[], size_corr = Float64[])
 #Dict(:Year =  , :Month =  , :channels =  , correlations =  , time = )
@@ -329,7 +323,7 @@ for mth in dates
             num_corrs += length(correlate_pairs) # add total number of correlations to summary
 
             # correlate
-            T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], sta_pairs))
+            T2 = @elapsed pmap(x -> correlate_pair(x, maxlag), map(y -> ffts[y], correlate_pairs))
  
             println("Data for $(days[i]) correlated in $(T2) seconds!")
 
@@ -337,6 +331,7 @@ for mth in dates
 
             # Perform cleanup of instance
             rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
+            GC.gc() # clean memory 
         catch e
             println("Difficulty processing $(days[i]). Unexpected error. Continuing to next day.")
         end
@@ -362,18 +357,18 @@ for mth in dates
 
     ################### Transfer to S3 ##########################
 
-    # s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
+    s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
+
+    month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
+    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
+    println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
+
+    # Delete for actual run 
+    # s3_put(aws, "seisbasin", "test/month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
 
     # month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
     # Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
     # println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
-
-    # Delete for actual run 
-    s3_put(aws, "seisbasin", "test/month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
-
-    month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
-    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", joinpath("test", x), read(x)), month_files)
-    println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
     corr_size +=foldersize("corr_large/$yr/$month_")
 
     println("$num_corrs total correlations processed")
@@ -388,3 +383,6 @@ for mth in dates
 end
 CSV.write("summary$yr.csv", summary)
 s3_put(aws, "seisbasin", "summary/summary$yr.csv", read("summary$yr.csv"))
+println("Done")
+
+s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000)
