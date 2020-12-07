@@ -1,4 +1,5 @@
-# Correlate-AWS-jl
+# SeisCore
+
 Codes for computing Ambient-Noise Cross-Correlations at scale on AWS in Julia.
 
 
