@@ -338,7 +338,29 @@ end
 
 pair_paths_df = csv_merge(month_fnames)
 
+function csv_merge(large_index = Array{String, 1})
+    """Returns dataframe with unique station pairs and csvs containing that station pair"""
+    all_pair_paths = DataFrame(source = String[], pair =String[], files = Array[])
+    unq_pairs = unique(Iterators.flatten([DataFrame(CSV.File(file)).Files for file in large_index]))
+    stations = [convert(String, strip(join(split(pair,".")[1:3],"."),'.')) for pair in unq_pairs]
+    for (ind, pair) in enumerate(unq_pairs)
+        pair_paths = Array{String, 1}(undef, 0)
+        for csv in large_index
+            try
+                df = DataFrame(CSV.File(csv))
+                path = df[(findall(x -> x==pair, df.Files)),:].paths[1]
+                push!(pair_paths, path)
+            catch 
+                # That CSV doesn't have that pair - not really a problem!
+            end
+        end
+        #print(pair_paths)
+        push!(all_pair_paths, [stations[ind], pair, pair_paths])
+    end
+    return all_pair_paths
+end
 
+pair_paths_df = csv_merge(month_fnames)
 
 
 
@@ -549,7 +571,6 @@ pair_paths_df = csv_merge(month_fnames)
         filename = joinpath(CORROUT,"$(name_source).h5")
         save_hdf5(AC, filename, convert(String,receiver_name))
     end
-
     components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
     # load, sum, stack and rotate correlations
     function postprocess_corrs(ar_corr_large)
@@ -597,6 +618,93 @@ println("Done")
 stacked_files = joinpath.("processed/$job_name", readdir("processed/$job_name"))
 @elapsed pmap(x -> s3_put(aws, bucket2, x, read(x)), stacked_files)
 println("Done")
+
+
+
+
+
+
+
+
+
+
+
+
+
+function postprocess_corrs(ar_corr_large)
+    # let's write this function so that everything gets saved into one file
+    # get/make the output dir (necessary?)
+    CORROUT = expanduser("processed/$job_name")
+    if isdir(CORROUT) == false
+        mkpath(CORROUT)
+    end
+    # get the year
+    yr = Dates.year(Date(ar_corr_large[1].id))
+    # get the virtual source name
+    s_name = strip(join(deleteat!(split(ar_corr_large[1].name,"."),[4,8]),"."),'.')
+    # make list of receiver names
+    list_of_receivers=#XX
+    # name = join([yr,p_name,C.comp],"_")
+    # get output filename
+    filename = joinpath(CORROUT,"$(sname).h5")
+    T = u2d(ar_corr_large[1].t[1]) # get starttime
+    D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+    ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),("dist",C.dist),
+    ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag),("starttime",T)])
+    # write metadata and add stacktypes
+    h5open(filename,"w") do file
+    m = g_create(file, "meta") #?
+    m["meta"] = D #?
+    #  g=g_create(file,"stack")
+    #  # g[C.comp]=C.corr[:]
+    #  # attrs(g)["Description"] = "linear stack"
+    #  h=g_create(g,stacktype)
+    #  h[C.comp]=C.corr[:]
+    #  end
+        for (ir,sta) in enumerate(list_of_receivers)
+            iik = # list of indices of all files for a single receiver
+            g=g_create(file,sta) # create group with receiver name
+            try
+                if any(occursin.(".GATR.", ar_corr_large[iik])) == true # crappy GATR station data - should catch earlier
+                    return nothing
+                end
+                comp_mean = Array{CorrData,1}(undef, 0)
+                comp_pws = Array{CorrData,1}(undef, 0)
+                comp_robust = Array{CorrData,1}(undef, 0)
+                # iterate and stack across components
+                for key in components
+                    # Get all correlations for particular component
+                    corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large[iik]])
+                    #filter!(x -> x! = nothing, corr_singles)
+                    # stack and append to array
+                    corr_mean = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=mean)
+                    corr_pws = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=pws)
+                    corr_robust = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=robuststack)
+                    # push!(comp_mean, corr_mean)
+                    # push!(comp_pws, corr_pws)
+                    # push!(comp_robust, corr_robust)
+                    # save to disk here
+                    g[comp_mean.comp]=corr_mean.corr[:]
+                    g[comp_mean.comp]=corr_pws.corr[:]
+                    g[comp_mean.comp]=corr_robust.corr[:]
+                end
+                # Location patch + write - only add to 6 stacked corrs
+                # for stack in [comp_mean, comp_pws, comp_robust]
+                    # map(x -> add_corr_locations(x, df), stack)
+                    # SeisNoise.rotate!(stack, stack[1].azi, stack[1].baz) # rotate
+                # write to disk
+                    # map(C-> save_processed(C, "processed/$job_name"), stack)
+                # end
+                return  [comp_mean, comp_pws, comp_robust] # to check work - probably don't need to return unless plotting
+            catch e
+                println(e)
+                return nothing
+            end # end of trying
+        end # end of loop over receivers
+    end # file close
+end # end of function
+
+
 
 
 

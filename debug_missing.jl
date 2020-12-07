@@ -353,16 +353,18 @@ filelist_scedc_BH =  [ "continuous_waveforms/2019/2019_001/CIADO__BHE___2019001.
 
 
 
-  fname = "2017_017_CI.IPT..CI.ARV_ZZ.jld2"
+fname = "/Users/julianschmitt/Downloads/Seismo/data/CORR/NO.201.--.EHE.NO.201.--.EHE.jld2"
  fname2 = "test.h5"
- comp="ZZ"
+ comp="EE"
  function save_hdf5(C::CorrData, name)
-       D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+        D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
         ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),("dist",C.dist),
         ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag)])
         # here i should convert the *t* as a date into a unix time.
-        T = convert(Int,C.t[1] * 1e6)
+        T = u2d(C.t[1])
         h5open(name,"w") do file
+            m = g_create(file, "meta")
+            m["meta"] = D
             g=g_create(file,"stack")
             g[C.comp]=C.corr[:]
             attrs(g)["Description"] = "linear stack"
@@ -370,3 +372,181 @@ filelist_scedc_BH =  [ "continuous_waveforms/2019/2019_001/CIADO__BHE___2019001.
     end
 C=load_corr(fname,comp)
 save_hdf5(C,fname2)
+
+
+
+files = glob("continuous_waveforms/2019/2019_347/*","data")
+
+
+for i in 1:length(ar2)
+    if size(ar2[i].t[1])[1] > 4
+    println(ar2[i].id, size(ar2[i].t[1])[1])
+    end
+end
+
+for i in 1:length(ar2)
+    if is_window(ar2[i], cc_len) == false
+        #println(ar2[i].id, size(ar2[i].t[1])[1])
+        println(ar2[i].id, length(ar2[i].x[1]))
+    end
+end
+
+
+row = all_stations[(findfirst(x -> x==name, all_stations.station)),:]
+
+counter = 0
+temp = []
+for name in [split(chn.name[1],".")[2] for chn in ar]
+    var = any(occursin.(name, df2.station))
+    if var == false
+        push!(temp, name)
+    else
+        counter +=1
+    end
+end
+println(counter)
+
+for row in eachrow(temp_sources) # silly loop - plz don't ever iterate rows 
+    push!(add_recievers, row)
+end 
+for row in eachrow(temp2_receivers)
+    push!(add_recievers, row)
+end
+
+
+function save_hdf5(AC::Array{Array{CorrData,1}}, name, receiver::String)
+    C = AC[1][1] # get metadata from first correlation
+    T = u2d(C.t[1]) # get starttime
+    D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+    ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),("dist",C.dist),
+    ("azi",C.azi),("baz",C.baz),("maxlag",C.maxlag),("starttime",T)])
+    # write metadata and add stacktypes
+    h5open(name,"cw") do file # read and write
+        m = g_create(file, "meta")
+        m["meta"] = D
+        
+        g=g_create(file,"stack")
+        # g[C.comp]=C.corr[:]
+        attrs(g)["Description"] = ["linear", "pws", "robust"]
+        #h=g_create(g,stacktype)
+        for i in 1:9
+            comp = AC[1][i].comp
+            g[comp]=[C[1][i].corr[:],C[2][i].corr[:],C[3][i].corr[:]]
+        end
+    end
+end
+
+
+@everywhere begin 
+    #using DataFrames, JLD2, SeisIO, SeisNoise, HDF5
+    # get lat, lon, and elevation (LLE) for station 
+    # gets array of corrs for particular file
+    function corr_load(corr_large, key)
+        try
+            jld = jldopen(corr_large, "r")
+            files = keys(jld[key])
+            corrs_comp = [jld["$key/$file"] for file in files]
+            close(jld)
+            return corrs_comp
+        catch e
+            println(e)
+            println("Likely $corr_large does not contain some components.")
+        end
+    end
+    function save_hdf5(AC::Array{Array{CorrData,1}}, name::String, receiver::String)
+        #println(name, receiver)
+        C = AC[1][1] # get metadata from first correlation
+        T = u2d(C.t[1]) # get starttime
+        D=Dict([ ("corr_type",C.corr_type), ("cc_len",C.cc_len),("cc_step",C.cc_len),
+        ("whitened",C.whitened), ("time_norm",C.time_norm), ("notes",C.notes),
+        ("maxlag",C.maxlag),("starttime",T)])
+        #println(name)
+        # write metadata and add stacktypes
+        h5open(name,"cw") do file # read and write
+            if !haskey(read(file),"meta") # if metadata isn't already added, add it
+                write(file, "meta/corr_type", C.corr_type)
+                write(file, "meta/cc_len", C.cc_len)
+                write(file, "meta/cc_step", C.cc_step)
+                write(file, "meta/whitened", C.whitened)
+                write(file, "meta/time_norm", C.time_norm)
+                write(file, "meta/notes", C.notes)
+                write(file, "meta/maxlag", C.maxlag)
+                write(file, "meta/starttime", Dates.format(T, "yyyy-mm-dd HH:MM:SS"))
+            end
+            #println("meta finished")
+            if !haskey(read(file), receiver)
+                #println("test",receiver)
+                g=g_create(file,receiver)
+                # g[C.comp]=C.corr[:]
+                attrs(g)["Description"] = ["linear", "pws", "robust"]
+                #h=g_create(g,stacktype)
+                for i in 1:9
+                    comp = AC[1][i].comp
+                    c = g_create(g, comp)
+                    for (ind, stackt) in enumerate(["linear","pws","robust"])
+                        #print(stackt)
+                        write(file, "$receiver/$comp/$stackt", AC[ind][i].corr[:])
+                    end
+                end
+            end
+        end
+    end
+    function save_processed(AC::Array{Array{CorrData,1}}, CORROUT::String)
+        # check if CORRDIR exists
+        CORROUT = expanduser(CORROUT)
+        if isdir(CORROUT) == false
+            mkpath(CORROUT)
+        end
+    
+        #name is YEAR_PAIRNAME.h5 - we store all components and all stacktypes
+        name = AC[1][1].name
+        yr = Dates.year(Date(AC[1][1].id))
+        p_name = strip(join(split(name,".")[1:3],"."),'.')
+        receiver_name = strip(join(split(name,".")[end-3: end-1],"."),'.')
+        println(receiver_name)
+        name_source = join([yr,p_name],"_")
+    
+        # create JLD2 file and save correlation
+        filename = joinpath(CORROUT,"$(name_source).h5")
+        save_hdf5(AC, filename, convert(String,receiver_name))
+    end
+
+    components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
+    # load, sum, stack and rotate correlations
+    function postprocess_corrs(ar_corr_large)
+        try
+            if any(occursin.(".GATR.", ar_corr_large)) # crappy GATR station data - should catch earlier
+                return nothing
+            end
+            comp_mean = Array{CorrData,1}(undef, 0)
+            comp_pws = Array{CorrData,1}(undef, 0)
+            comp_robust = Array{CorrData,1}(undef, 0)
+            # iterate and stack across components
+            for key in components
+                # Get all correlations for particular component
+                corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
+                #filter!(x -> x! = nothing, corr_singles)
+                # stack and append to array
+                corr_mean = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=mean)
+                corr_pws = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=pws)
+                corr_robust = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=robuststack)
+                push!(comp_mean, corr_mean)
+                push!(comp_pws, corr_pws)
+                push!(comp_robust, corr_robust)
+            end
+            # # Location patch - only add to 6 stacked corrs
+            # for stack in [comp_mean, comp_pws, comp_robust]
+            #     #map(x -> add_corr_locations(x, df), stack)
+            #     SeisNoise.rotate!(stack, stack[1].azi, stack[1].baz) # rotate
+            # # write to disk
+            #     map(C-> save_processed(C, "processed/$job_name"), stack)
+            # end
+            save_processed([comp_mean, comp_pws, comp_robust], "processed")
+            #return nothing #[comp_mean, comp_pws, comp_robust] # to check work - probably don't need to return unless plotting
+        catch e
+            println(e)
+            return nothing
+        end
+    end
+end
+

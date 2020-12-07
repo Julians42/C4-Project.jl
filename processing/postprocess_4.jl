@@ -180,7 +180,7 @@ function formatbytes(bytes::Real, digits::Int=1)
 end
 
 function diskusage(dir)
-    s = read(`du -k $dir`, String)
+    s = read(`du -k $(dir)`, String)
     kb = parse(Int, split(s)[1])
     return 1024 * kb
 end
@@ -371,6 +371,10 @@ components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
             end
             for (ind, receiver) in enumerate(list_of_receivers)
                 if !haskey(read(file), receiver)
+                    # Add distance between station and source
+                    if !haskey(read(file), "$reciever/dist")
+                        write(file, "$reciever/dist", C.dist)
+                    end
                     ar_corr_large = filter(row -> row.receiver == receiver, df_source).files[1]
                     #g=g_create(file,sta) # create group with receiver name
                     try
