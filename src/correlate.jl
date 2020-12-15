@@ -235,8 +235,8 @@ end
     OUTDIR = "~/data"
 end
 
-# select start/ enddate (Default calculates for entire month eg start_date on 003 rounds to 001)
-start_date, end_date = "2019-01-01", "2019-12-31"
+# select start/ enddate (Default calculates for entire month: eg start_date on 003 rounds to 001)
+start_date, end_date = "2018-07-01", "2018-12-31"
 dates = divide_months(start_date, end_date)
 summary = DataFrame(Year = Int[], Month = String[], channels = Int[], correlations = Int[], time = Millisecond[], size_raw = Float64[], size_corr = Float64[])
 #Dict(:Year =  , :Month =  , :channels =  , correlations =  , time = )
