@@ -261,8 +261,8 @@ end
     aws = aws_config(region="us-west-2")
     bucket = "scedc-pds"
     bucket2 = "seisbasin"
-    startdate = "2017-01-01" # Select Start Date
-    enddate = "2017-12-31" # Select End Date
+    startdate = "2019-01-01" # Select Start Date
+    enddate = "2019-12-31" # Select End Date
     days = Date(startdate):Day(1):Date(enddate)
 end
 
@@ -280,7 +280,7 @@ stations = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
 df = DataFrame(CSV.File("files/full_socal.csv"))
 @eval @everywhere df = $df
-job_name = "linear/2018"
+job_name = "linear/2019"
 @eval @everywhere job_name = $job_name
 ############################# Get files for unique station pair ####################
 
@@ -336,47 +336,29 @@ components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
             println("Likely $corr_large does not contain some components.")
         end
     end
-    function LLE_geo(network, station, df)
-        """ Find station matching location and return geoloc object"""
-        try
-            row = filter(row -> (row.network==network) & (row.station==station), df)[1,:]
-            return GeoLoc(lat = float(row.latitude), lon = float(row.longitude), el = float(row.elevation))
-        catch 
-            return nothing # when station is not found in dataframe
-        end
-    end
-    function postprocess_corrs(source, pair_df, stations) 
-        """ Stacks monthly jld2 files into h5, saving comprehensive metadata
-            - Arguments: 
-                        source - string for source station
-                        pair_df - dataframe containing file pathing information
-                        stations - dataframe with location information
-            - Returns (nothing):
-                        h5 file for source station with stacked yearly correlations
-                        for each receiver station 
-                        contains receiver and source metadata
-        """
-        # filter receivers, throwing out bad GATR station
-        df_source = filter(row -> (row.source ==source) & (!occursin("GATR", row.receiver)), pair_df) # get receivers
-        list_of_receivers = df_source.receiver  # list of receiver names
-
-        # get example correlation to extract metadata
-        C = corr_load(df_source.files[1][1],"ZZ")[1]
-        # file naming YEAR_NET.STA.h5
-        yr, p_name = Dates.year(Date(C.id)), strip(join(split(C.name,".")[1:3],"."),'.')
-        name_source = join([yr,p_name],"_")
-        CORROUT = expanduser("source_processed/$yr/")
-        if !isdir(CORROUT)
+    function postprocess_corrs(source, df) # give this a source station 
+        df_source = filter(row -> row.source ==source, df)
+        # let's write this function so that everything gets saved into one file
+        # get/make the output dir (necessary?)
+        CORROUT = expanduser("processed/")
+        if isdir(CORROUT) == false
             mkpath(CORROUT)
         end
-        filename = joinpath(CORROUT,"$(name_source).h5") # get output filename
-
-        # get source location information
-        src_net, src_sta = convert(String,split(source,".")[1]), convert(String,split(source,".")[2])
-        src_geo = LLE_geo(src_net, src_sta, stations)
+        # get example correlation to extract metadata etc 
+        C = corr_load(df_source.files[1][1],"ZZ")[1]
+        name = C.name
+        yr = Dates.year(Date(C.id))
+        p_name = strip(join(split(name,".")[1:3],"."),'.')
+        name_source = join([yr,p_name],"_")
+        # make list of receiver names
+        #list_of_receivers= [strip(join(split(pair_name,".")[4:end],"."),'.') for pair_name in df_source.pair]
+        list_of_receivers = df_source.receiver
+        # get output filename
+        filename2 = joinpath(CORROUT,"$(p_name).h5")
+        T = u2d(C.t[1]) # get starttime
     
         # write metadata and add stacktypes
-        h5open(filename,"cw") do file
+        h5open(filename2,"cw") do file
             if !haskey(read(file),"meta") # if metadata isn't already added, add it
                 write(file, "meta/corr_type", C.corr_type)
                 write(file, "meta/cc_len", C.cc_len)
@@ -385,65 +367,42 @@ components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
                 write(file, "meta/time_norm", C.time_norm)
                 write(file, "meta/notes", C.notes)
                 write(file, "meta/maxlag", C.maxlag)
-                write(file, "meta/starttime", Dates.format(u2d(C.t[1]), "yyyy-mm-dd HH:MM:SS"))
-                if !isnothing(src_geo) # add source location
-                    write(file, "meta/lat", src_geo.lat)
-                    write(file, "meta/lon", src_geo.lon)
-                    write(file, "meta/el", src_geo.el)
-                    write(file, "meta/dep", src_geo.dep)
-                    write(file, "meta/az", src_geo.az)
-                    write(file, "meta/inc", src_geo.inc)
-                end
+                write(file, "meta/starttime", Dates.format(T, "yyyy-mm-dd HH:MM:SS"))
             end
-            count=0
             for (ind, receiver) in enumerate(list_of_receivers)
-                try
-                    if !haskey(read(file), receiver)
-                        # add location metadata
-                        rec_net, rec_sta = split(receiver,".")[1], split(receiver,".")[2]
-                        rec_geo = LLE_geo(rec_net, rec_sta, stations)
-                        if !isnothing(src_geo) & !isnothing(rec_geo)
-                            dist, azi, baz = get_dist(src_geo, rec_geo), get_azi(src_geo, rec_geo), get_baz(src_geo, rec_geo)
-                            write(file, "$receiver/meta/dist", dist)
-                            write(file, "$receiver/meta/azi", azi)
-                            write(file, "$receiver/meta/baz", baz)
-                            write(file, "$receiver/meta/lat", rec_geo.lat)
-                            write(file, "$receiver/meta/lon", rec_geo.lon)
-                            write(file, "$receiver/meta/el", rec_geo.el)
-                            write(file, "$receiver/meta/dep", rec_geo.dep)
-                            write(file, "$receiver/meta/az", rec_geo.az)
-                            write(file, "$receiver/meta/inc", rec_geo.inc)
-                        end
-                        # stack and process reciever correlations
-                        ar_corr_large = filter(row -> row.receiver == receiver, df_source).files[1]
-                        try
-                            comp_mean = Array{CorrData,1}(undef, 0)
-                            comp_pws = Array{CorrData,1}(undef, 0)
-                            comp_robust = Array{CorrData,1}(undef, 0)
-                            # iterate and stack across components
-                            for key in components
-                                # Get all correlations for particular component
-                                corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
-                                #filter!(x -> x! = nothing, corr_singles)
-                                # stack and append to array
-                                corr_mean = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=mean)
-                                corr_pws = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=pws)
-                                corr_robust = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=robuststack)
-                                #println(length(corr_mean))
-                                # save to disk here
-                                write(file, "$receiver/$key/linear", corr_mean.corr[:])
-                                write(file, "$receiver/$key/pws", corr_pws.corr[:])
-                                write(file, "$receiver/$key/robust", corr_robust.corr[:])
-                            end
-                        catch e
-                            println(e)
-                            return nothing
-                        end # end of trying :)
+                if !haskey(read(file), receiver)
+                    # Add distance between station and source
+                    if !haskey(read(file), "$reciever/dist")
+                        write(file, "$reciever/dist", C.dist)
                     end
-                    count +=1 # track progress
-                    println("Iteration $count of $(length(list_of_receivers)) complete: processed receiver $receiver")
-                catch e
-                    println(e)
+                    ar_corr_large = filter(row -> row.receiver == receiver, df_source).files[1]
+                    #g=g_create(file,sta) # create group with receiver name
+                    try
+                        # if any(occursin.(".GATR.", ar_corr_large[iik])) == true # crappy GATR station data - should catch earlier
+                        #     return nothing
+                        # end
+                        comp_mean = Array{CorrData,1}(undef, 0)
+                        comp_pws = Array{CorrData,1}(undef, 0)
+                        comp_robust = Array{CorrData,1}(undef, 0)
+                        # iterate and stack across components
+                        for key in components
+                            # Get all correlations for particular component
+                            corr_singles = Iterators.flatten([corr_load(corr_large, key) for corr_large in ar_corr_large])
+                            #filter!(x -> x! = nothing, corr_singles)
+                            # stack and append to array
+                            corr_mean = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=mean)
+                            corr_pws = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=pws)
+                            corr_robust = SeisNoise.stack(sum(corr_singles), allstack=true, stacktype=robuststack)
+                            #println(length(corr_mean))
+                            # save to disk here
+                            write(file, "$receiver/$key/linear", corr_mean.corr[:])
+                            write(file, "$receiver/$key/pws", corr_pws.corr[:])
+                            write(file, "$receiver/$key/robust", corr_robust.corr[:])
+                        end
+                    catch e
+                        println(e)
+                        return nothing
+                    end # end of trying
                 end
             end
         end # file close
@@ -451,12 +410,4 @@ components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
 end
 
 
-T = @elapsed pmap(x-> postprocess_corrs(x, pair_paths_df,df), sources)
-println("Year Stack Completed in $T seconds")
-
-#postprocess_corrs(pair_paths_df.source[1],pair_paths_df[1:2,:],df)
-
-# transfer to seisbasin
-stacked_files = glob("source_processed/*/*.h5")
-Transfer = @elapsed pmap(x -> s3_put(aws, "seisbasin", x, read(x)), stacked_files)
-println("Transfer Completed in $Transfer seconds.")
+T = @elapsed pmap(x-> postprocess_corrs(x, pair_paths_df), sources)
