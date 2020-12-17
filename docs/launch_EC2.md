@@ -35,22 +35,22 @@ julia ~/SCEDC-AWS/src/build_environment/julia/add-packages.jl
 cd
 ```
 ### Python - refer to Tim's (github)[https://github.com/tclements/SCEDC-AWS/tree/master/src/build_environment/python]
-6.1. Run `bash miniconda.sh` to install miniconda
-6.2. Run `source ~/.bashrc` to update conda
-6.3. Run `bash build_env.sh` to install seismology Python3 environment py3
-7. Install needed packages using the package manager type `]` then run `add PACKAGE` to add packages
-    7.1: To add the SCEDC package you'll need to run:
-        `using Pkg; Pkg.add(PackageSpec(url="https://github.com/tclements/SCEDC.jl", rev="master"))`
-    7.2: Remember packages don't update on instance! From the package manager use the `status` command to check current package versions
+6.1. Run `bash miniconda.sh` to install miniconda  
+6.2. Run `source ~/.bashrc` to update conda  
+6.3. Run `bash build_env.sh` to install seismology Python3 environment py3  
+7. Install needed packages using the package manager type `]` then run `add PACKAGE` to add packages  
+    7.1: To add the SCEDC package you'll need to run:  
+        `using Pkg; Pkg.add(PackageSpec(url="https://github.com/tclements/SCEDC.jl", rev="master"))`  
+    7.2: Remember packages don't update on instance! From the package manager use the `status` command to check current package versions  
 
-8. To access S3 cloud storage you'll need to add an IAM role:
-    8.1: Right click on instance
-    8.2: Click Instance Settings
-    8.3: Attach/replace AIM role
-    8.4: Create New IAM -> Create Role -> (Common) EC2
-    8.5: Search for "AmazonS3FullAccess" -> click through tags
-    8.6: Name IAM role (ex: "full_S3_access_from_EC2") and Create
-    8.7: Add role
+8. To access S3 cloud storage you'll need to add an IAM role:  
+    8.1: Right click on instance  
+    8.2: Click Instance Settings  
+    8.3: Attach/replace AIM role  
+    8.4: Create New IAM -> Create Role -> (Common) EC2  
+    8.5: Search for "AmazonS3FullAccess" -> click through tags  
+    8.6: Name IAM role (ex: "full_S3_access_from_EC2") and Create  
+    8.7: Add role  
 
 9. Create an IAM role to save the installation of Julia or python and packages to speed up launching your next instance. This can be found in the right-click drop down. 
 
