@@ -1,15 +1,7 @@
----
-title: "SeisCore.jl"
-author: "Julian Schmitt"
-date: "12/7/2020"
-output: pdf_document
----
-
-
 # SeisCore.jl
 
 SeisCore.jl contains codes for replication of our Ambient-Noise Cross-Correlation method in Julia using High Performance Computing 
-and instructions for accessing our stacked product.
+and instructions for accessing our stacked correlation data product.
 
 ## Getting Started
 Our data product is stored in an Amazon Web Services S3 cloud storage [bucket](https://s3.console.aws.amazon.com/s3/buckets/seisbasin?region=us-west-2&tab=objects).
@@ -42,7 +34,7 @@ julia> SOURCE = read(fid)
 
 
 ### Example
-To access desired stacktype, filter desired correlations, and access metadata, your script might leverage the following `SeisCore.jl` functionality found in [docs](https://github.com/Julians42/SeisCore.jl/tree/master/docs/dataaccess.jl). We include an example of the workflow below:
+To access desired stacktype, filter desired correlations, and access metadata, your script might leverage the following `SeisCore.jl` functionality found in our [documentation](https://github.com/Julians42/SeisCore.jl/tree/master/docs/dataaccess.jl). We include an example of the workflow below:
 ```julia
 # select example parameters 
 name, stacktype, component, filter = "CHN", "linear", "ZZ", "NO.B4"
@@ -62,5 +54,5 @@ Which produces a plot for each of the 3 selected frequency plots. For example:
 ## Reproducibility
 This section details highlights of our methodology and details how to begin AWS cloud computing in Julia for yourself!
 
-[launch EC2](https://github.com/Julians42/SeisCore.jl/blob/master/docs/launch_EC2) contains instructions and video link for launching an AWS instance and installing Julia for cloud computing. Further docs to come... Happy Computing!
+[launch EC2](https://github.com/Julians42/SeisCore.jl/blob/master/docs/launch_EC2.md) contains instructions and video link for launching an AWS instance and installing Julia for cloud computing. Also checkout our startup [youtube video](https://www.youtube.com/watch?v=0hGoK1SdBm4) for a guide to Amazon's compute platform. Further docs to come... Happy Computing!
 
