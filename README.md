@@ -19,12 +19,12 @@ Julia and Python. Below we describe the hierarchical structure of each file and 
 ![Data Pathing Graphic](src/assets/datafields.jpg)  
 ### Contents
 Each file contains the following
-1. Source metadata, accessed via the group `"meta"`:
-    a. Correlation metadata: `corr_type`,`cc_len`, `cc_step`, `whitened`, `time_norm`, `notes`, `maxlag`, and `starttime`.
-    b. Source location metadata: `lat`, `lon`, `el`, `dep`, `az`, and `inc`.
-2. Reciever metadata, accessible as a subgroup in the recievere group via `"meta"`:
-    a. Correlation metadata: `dist`, `azi`, `baz`.
-    b. Receiver location metadata: `lat`, `lon`, `el`, `dep`, `az`, and `inc`.
+1. Source metadata, accessed via the group `"meta"`:  
+    a. Correlation metadata: `corr_type`,`cc_len`, `cc_step`, `whitened`, `time_norm`, `notes`, `maxlag`, and `starttime`.  
+    b. Source location metadata: `lat`, `lon`, `el`, `dep`, `az`, and `inc`.  
+2. Reciever metadata, accessible as a subgroup in the recievere group via `"meta"`:  
+    a. Correlation metadata: `dist`, `azi`, `baz`.  
+    b. Receiver location metadata: `lat`, `lon`, `el`, `dep`, `az`, and `inc`.  
 ### In Julia
 ```julia
 julia> using SeisIO, SeisNoise, HDF5

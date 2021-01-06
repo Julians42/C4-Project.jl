@@ -261,8 +261,8 @@ end
     aws = aws_config(region="us-west-2")
     bucket = "scedc-pds"
     bucket2 = "seisbasin"
-    startdate = "2017-01-01" # Select Start Date
-    enddate = "2017-12-31" # Select End Date
+    startdate = "2019-01-01" # Select Start Date
+    enddate = "2019-12-31" # Select End Date
     days = Date(startdate):Day(1):Date(enddate)
 end
 
@@ -386,6 +386,7 @@ components =["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
                 write(file, "meta/notes", C.notes)
                 write(file, "meta/maxlag", C.maxlag)
                 write(file, "meta/starttime", Dates.format(u2d(C.t[1]), "yyyy-mm-dd HH:MM:SS"))
+                write(file, "meta/samp_freq", fs)
                 if !isnothing(src_geo) # add source location
                     write(file, "meta/lat", src_geo.lat)
                     write(file, "meta/lon", src_geo.lon)
