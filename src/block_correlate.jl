@@ -1,18 +1,36 @@
-T = @elapsed using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Statistics, PyCall, Glob, StructArrays, AWSS3, SeisIO.SEED
-
-using Pkg 
-ENV["GR"] = ""
-Pkg.build("GR")
+T = @elapsed using SeisIO, SeisNoise, Plots, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, 
+                    JLD2, Statistics, PyCall, Glob, StructArrays, AWSS3, SeisIO.SEED
 
 #Add procs to access multiple cores
 addprocs()
+@everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob, SeisIO.SEED
+
+######################## Meta Data ###############################
+#coeffs - send to all cores
+@everywhere begin 
+    cc_step, cc_len = 3600, 3600
+    maxlag, fs = 300., 20. # maximum lag time in correlation, sampling frequency
+    freqs = [20., 100.]
+    freqmin, freqmax = 0.05, 9.9
+    half_win, water_level = 30, 0.01
+    aws = aws_config(region="us-west-2")
+    bucket = "scedc-pds"
+    bucket2 = "seisbasin"
+    network = "CI"
+    channel1 = "BH?"
+    channel2 = "HH?"
+    OUTDIR = "~/data"
+end
+
+# select start/ enddate (Default calculates for entire month: eg start_date on 003 rounds to 001)
+# start_date, end_date = "2018-07-01", "2018-12-31" # depreciated in favor of ARGS
+mem = true # choose whether to favor smaller I/O (true) or less inter-core communication (false)
+chunk_length = 30
 
 # Read in station locations and list source stations
 all_stations = DataFrame(CSV.File("files/full_socal.csv"))
-sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
-        ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
+##############################################################################
 
-@everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob, SeisIO.SEED
 @everywhere begin 
     function is_window(C::SeisData, cc_len::Int64)
         """ Returns true if data has large enough ungapped window for correlation """
@@ -31,7 +49,29 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             return [data, file]
         end
     end
-    function preprocess(S::SeisData, fs::Float64, freqmin::Float64, freqmax::Float64, cc_step::Int64, cc_len::Int64, half_win::Int64, water_level::Float64)
+    function LLE_geo(station, df)
+        """ Find station matching location and return geoloc object"""
+        try
+            row = df[(findfirst(x -> x==station, df.station)),:]
+            lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+            geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+            return geo
+        catch 
+            return nothing
+        end
+    end    
+    function add_location(seis::SeisData,df::DataFrame)
+        """ Adds locations to array of seisdata from a dataframe """
+        name = split(seis.id[1],".")[2]
+        geo = LLE_geo(name, df)
+        if !isnothing(geo)
+            seis.loc[1] = geo
+        else
+            #println("Station $name doesn't have a location in the dataframe")
+        end
+    end
+    function preprocess(S::SeisData, fs::Float64, freqmin::Float64, freqmax::Float64, cc_step::Int64, 
+                        cc_len::Int64, half_win::Int64, water_level::Float64)
         """
             Pre-process raw seismic data object.
             - Removes mean from `S`.
@@ -42,7 +82,11 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             - Phase-shifts data to begin at 00:00:00.0
         """
         try
-            process_raw!(S, fs)
+            if fs <= 20.
+                process_raw!(S, fs)
+            else
+                process_raw!(S, S.fs[1])
+            end
             R = RawData(S,cc_len,cc_step)
             SeisNoise.detrend!(R)
             SeisNoise.taper!(R)
@@ -57,7 +101,52 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
             return [nothing, bool]
         end
     end
-
+    function all_preprocess(file, samp_rates::Array{Float64,1}, freqmin::Float64, freqmax::Float64, cc_step::Int64, 
+                            cc_len::Int64, half_win::Int64, water_level::Float64)
+        """
+            Load raw seisdata file and process, saving to fft per frequency
+        """
+        data = SeisData()
+        if occursin("continuous", file[1])
+            read_data!(data, "mseed", file[1])
+        else
+            read_data!(data, "seisio", file[1])
+        end
+        gaps = size(data.t[1])[1] # N-2 gaps (eg gaps = 12 tests for 10 gaps)
+        pts = size(data.x[1])[1]
+        fs_temp = data.fs[1]
+        if gaps < 25 && is_window(data, cc_len) == true # If few gaps and sufficient (2/3) data present, data is clean
+            try
+                add_location(data, all_stations)
+                # continue with preprocessing 
+                for samp_rate in samp_rates
+                    println(data.fs[1], samp_rate)
+                    S = SeisData()
+                    try
+                        S = process_raw(data, samp_rate)
+                    catch # trying to sample non 100Hz data at 100 Hz - skip resampling 
+                        S = process_raw(data, data.fs[1])
+                    end
+                    R = RawData(S,cc_len,cc_step)
+                    SeisNoise.detrend!(R)
+                    SeisNoise.taper!(R)
+                    bandpass!(R,freqmin,freqmax,zerophase=true)
+                    FFT = compute_fft(R) # Compute Fourier Transform
+                    coherence!(FFT,half_win, water_level)
+                    try # save fft 
+                        FFT.gain = file[2]
+                        root_fft = "ffts/$path/$(Int(samp_rate))"
+                        save_fft(FFT, root_fft)
+                    catch e
+                        println(e)
+                    end
+                end
+                return data.id[1]
+            catch e
+                println(e)
+            end
+        end
+    end
     function cc_medianmute(A::AbstractArray, cc_medianmute_α::Float64 = 10.0)
         """
             Remove noisy correlation windows before stacking
@@ -78,20 +167,6 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
     function name_corr(C::CorrData)
         """ Returns corr name string: CH1.STA1.LOC1.CH2.STA2.LOC2 """
         return strip(join(deleteat!(split(C.name,"."),[4,8]),"."),'.')
-    end
-    function all2all(src_fft, rec_fft)
-        """ Correlates all station pairs from source to recievers """
-        for s_fft in src_fft
-            for r_fft in rec_fft
-                if s_fft.gain <= r_fft.gain
-                    C = correlate(s_fft,r_fft, maxlag)
-                    cc_medianmute!(C, 10.) # remove correlation windows with high noise
-                    stack!(C)
-                    pair, comp = name_corr(C), C.comp
-                    save_named_corr(C,"CORR/$pair/$comp")
-                end
-            end
-        end
     end
     function save_named_corr(C::CorrData, CORROUT::String)
         """ Implements custom naming scheme for project """
@@ -163,11 +238,44 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         receivers = map(x-> load_fft(x, string(x[end-7:end-5])), fft_name_ar[2])
 
         # Correlate
-        all2all(sources, receivers)
+        #all2all(sources, receivers)
+        for s_fft in sources
+            for r_fft in receivers
+                if (s_fft.gain <= r_fft.gain) && (get_dist(s_fft.loc,r_fft.loc) <= 300.)
+                    try
+                        C = correlate(s_fft,r_fft, maxlag)
+                        cc_medianmute!(C, 10.) # remove correlation windows with high noise
+                        stack!(C)
+                        pair, comp = name_corr(C), C.comp
+                        if s_fft.loc == r_fft.loc # save autocorrs in different rootdir 
+                            save_named_corr(C,"AUTOCORR/$pair/$comp")
+                        else
+                            save_named_corr(C,"CORR/$pair/$comp")
+                        end
+                    catch e
+                        println(name_corr(correlate(s_fft, r_fft, maxlag)))
+                    end
+                end
+            end
+        end
     end
-    function correlate_mem(fft_double_array::Array{Array{FFTData,1},1})
-        # Correlate as corrs already loaded
-        all2all(fft_double_array[1], fft_double_array[2])
+    function test_correlate_load(fft_name_ar::Array{Array{String,1},1}, maxdist)
+        # Load ffts for sources and receivers
+        sources = map(x-> load_fft(x, string(x[end-7:end-5])), fft_name_ar[1])
+        receivers = map(x-> load_fft(x, string(x[end-7:end-5])), fft_name_ar[2])
+
+        # Correlate
+        indices = []
+        for s_fft in sources
+            for r_fft in receivers
+                if (s_fft.gain <= r_fft.gain) && (get_dist(s_fft.loc,r_fft.loc) <= maxdist)
+                    push!(indices, get_dist(s_fft.loc,r_fft.loc))
+                elseif (s_fft.gain <= r_fft.gain)
+                    push!(indices, nothing)
+                end
+            end
+        end
+        return indices
     end
 end
 
@@ -184,34 +292,6 @@ function divide_months(t_start::String, t_end::String)
     return dates
 end
 
-#Add location from dataframe to array 
-function LLE_geo(station, df)
-    """ Find station matching location and return geoloc object"""
-    try
-        row = df[(findfirst(x -> x==station, df.station)),:]
-        lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
-        geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
-        return geo
-    catch 
-        return nothing
-    end
-end
-
-function add_locations(ar::Array{SeisData,1},df::DataFrame)
-    """ Adds locations to array of seisdata from a dataframe """
-    good_indices = Array{Int32 ,1}(undef, 0)
-    for (ind, chn) in enumerate(ar)
-        name = split(chn.name[1],".")[2]
-        geo = LLE_geo(name, df)
-        if !isnothing(geo)
-            chn.loc[1] = geo
-            push!(good_indices, ind)
-        else
-            #println("Station $name doesn't have a location in the dataframe")
-        end
-    end
-    return good_indices
-end
 
 #Returns indices of source stations at index 1 and non-source stations at index 2
 function correlate_indices(to_correlate::Array{String, 1}, sources::Array{String,1})
@@ -248,175 +328,179 @@ function foldersize(dir=".")
     return size*10e-10
 end
 
-#coeffs - send to all cores
-@everywhere begin 
-    cc_step, cc_len = 3600, 3600
-    maxlag, fs = 300., 20. # maximum lag time in correlation, sampling frequency
-    freqmin, freqmax = 0.05, 9.9
-    half_win, water_level = 30, 0.01
-    aws = aws_config(region="us-west-2")
-    bucket = "scedc-pds"
-    bucket2 = "seisbasin"
-    network = "CI"
-    channel1 = "BH?"
-    channel2 = "HH?"
-    OUTDIR = "~/data"
+startdate, enddate = "2014-01-01", "2014-01-02"
+job_id = Dates.now() # we choose a timestamp for unique job id - only important for job summary output
+
+chunk_length = 30
+mem = false # choose whether to favor smaller I/O (true) or less inter-core communication (false). Most efficient depends on system
+single = false # mem must be set to false
+days = Date(startdate):Day(1):Date(enddate)
+
+i=1
+yr = Dates.year(days[i])
+path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+@eval @everywhere path, all_stations = $path, $all_stations
+# Download SCEDC and Seisbasin (nodes, NCEDC, IRIS) data 
+
+# get SCEDC data
+if !isdir("scedc_path/$yr/")
+    mkpath("scedc_path/$yr/")
+end
+s3_get_file(aws, "seisbasin", "scedc_path/$yr/$path.csv", "scedc_path/$yr/$path.csv")
+scedc_files = DataFrame(CSV.File("scedc_path/$yr/$path.csv")).Path
+
+ec2download(aws, bucket, scedc_files, OUTDIR)
+
+
+# get seisbasin data
+filelist_basin = Array{String,1}(undef,0)
+for data_source in ["continuous","iris","ncedc"]
+    dict = collect(s3_list_objects(aws, "seisbasin", "$(data_source)_waveforms/$(yr)/$(path)/", max_items=1000))
+    #Index to filepath given by the "Key" element of the dictionary
+    for ind in 1:length(dict)
+        push!(filelist_basin, dict[ind]["Key"])
+    end
+end
+filter!(x -> x[end] != '/', filelist_basin)
+@eval @everywhere filelist_basin=$filelist_basin
+
+try
+    ec2download(aws, bucket2, filelist_basin, OUTDIR)
+    data_avail = true
+catch
+    println("Error Downloading seisbasin data for $path. Potentially no data available.")
 end
 
-# select start/ enddate (Default calculates for entire month: eg start_date on 003 rounds to 001)
-start_date, end_date = "2018-07-01", "2018-12-31"
-dates = divide_months(start_date, end_date)
-summary = DataFrame(Year = Int[], Month = String[], channels = Int[], correlations = Int[], time = Millisecond[], size_raw = Float64[], size_corr = Float64[])
-for mth in dates
-    startdate, enddate = mth[1], mth[2]
-    days = Date(startdate):Day(1):Date(enddate)
-    @eval @everywhere startdate, enddate = $startdate, $enddate
-    @eval @everywhere days = $days
-    num_channels, num_corrs, raw_size, corr_size = 0, 0, 0, 0
-    T_start = Dates.now()
-    for i in 1:length(days)
-        try
-            yr = Dates.year(days[i])
-            path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+################# All Preprocess Script ##################
+files_seis = Glob.glob("data/*_waveforms/$(Dates.year(days[i]))/$(path)/*")
+zip_gain = collect(zip(files_seis, collect(1:length(files_seis))))
+Total_preprocess = pmap(file_gain -> all_preprocess(file_gain, freqs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), zip_gain)
 
-            ############################ Data Download ###################################
-            # get BH and HH data - BH is smaller, but doesn't contain all stations
-            ar_filelist = pmap(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
-            filelist_scedc_BH = ar_filelist[1]
-            filelist_scedc_HH = ar_filelist[2]
-            # create dictionary and overwrite HH keys with available BH data
+function list_name(s::String)
+    name = convert(String, split(s,"/")[end])
+    if occursin("continuous", s)
+        net, cha, sta, comp = name[1:2], strip(convert(String, name[3:6]),'_'), 
+                            strip(convert(String, name[11:12]),'_'), name[8:10]
+        return join([net, cha, sta, comp],".")
+    else
+        return name
+    end
+end
+seis_names = map(x -> list_name(x), files_seis)
+fft_list_20 = ["ffts/$path/20/$name.jld2" for name in seis_names if isfile("ffts/$path/20/$name.jld2")]
+fft_list_100 = ["ffts/$path/100/$name.jld2" for name in seis_names if isfile("ffts/$path/100/$name.jld2")]
 
 
-            BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
-            HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
 
-            # Convert to dictionary 
-            HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
-            BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
-            filelist_dict = merge(HH_dict, BH_dict) # BH dict overwrite HH_dict. This is essentually the union
-            filelist_scedc = collect(values(filelist_dict)) # return values as array for download
-            
-            try
-                ec2download(aws, bucket, filelist_scedc, OUTDIR)
-                data_avail = true
-            catch
-                println("Error Downloading SCEDC data for $path. Potentially no data available.")
+
+# run Autocorrs 
+#get station data
+fft_100_stations = unique([join(split(elt, ".")[1:2],".") for elt in fft_list_100])
+
+@everywhere begin
+    function autocorrelate(station_name::String)
+        station = map(x-> load_fft(x, string(x[end-7:end-5])), glob("$(station_name)*"))
+        for (ind, src) in enumerate(station)
+            for rec_ind in ind:length(station)
+                C = correlate(src,station[rec_ind], maxlag)
+                # Upsample C = upsample!(C)
+
+                cc_medianmute!(C, 10.) # remove correlation windows with high noise
+                stack!(C)
+                pair, comp = name_corr(C), C.comp
+                save_named_corr(C,"AUTOCORR/$pair/$comp")
             end
-            
-            dict = collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))
-            filelist_basin = Array{String,1}(undef,length(dict))
-            #Index to filepath given by the "Key" element of the dictionary
-            for ind in 1:length(dict)
-                filelist_basin[ind] = dict[ind]["Key"]
-            end
-            @eval @everywhere filelist_basin=$filelist_basin
-            
-            try
-                ec2download(aws, bucket2, filelist_basin, OUTDIR)
-                data_avail = true
-            catch
-                println("Error Downloading seisbasin data for $path. Potentially no data available.")
-            end
-
-            ####################### Read and Preprocess ####################################
-            fpaths = readdir("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)")
-            files = joinpath.("/home/ubuntu/data/continuous_waveforms/$(Dates.year(days[i]))/$(path)",fpaths)
-            
-            T_load = @elapsed ar_file = pmap(x->load_file(x), files) # load data 
-            ar = [elt[1] for elt in ar_file if isnothing(elt)==false];
-            good_indices = add_locations(ar, all_stations) # add source locations
-            ar = ar[good_indices] # we only want to correlate data which has locations 
-            #clean_files = [elt[2] for elt in ar_file if isnothing(elt)==false]
-            println("Data for $(days[i]) loaded in $T_load seconds. $(length(ar)) channels to be correlated, with $(length(ar_file)-length(ar)) channels discarded.")
-
-            T_preprocess = @elapsed fft_raw = pmap(x -> preprocess(x, fs, freqmin, freqmax, cc_step, cc_len, half_win, water_level), ar)
-
-            ffts = [fft[1] for fft in fft_raw] # extract ffts from raw array
-            bools = [fft[2] for fft in fft_raw] # extract processing success/failure bools from raw array
-            println("Data for $(days[i]) preprocessed in $T_preprocess seconds.")
-            #ffts, ar, clean_files = ffts[bools], ar[bools], clean_files[bools]
-            ffts = ffts[bools]
-            num_channels += length(ffts) # add number of channels to be processed to summary 
-            if any(bools == 0) # report if some channels failed in preprocessing
-                num_bad_preprocess = length([bool for bool in bools if bool ==1])
-                println("$num_bad_preprocess channels failed in preprocessing. $(length(ar)) channels to be correlated.")
-            end
-            # save ffts
-            root_fft = "ffts/$(yr)_$path"
-            if !isdir(root_fft)
-                mkpath(root_fft)
-            end
-            for (ind, elt) in enumerate(ffts) # assign index to each fft to ensure upper triangular computes only
-                elt.gain = float(ind)
-            end
-            
-
-            ###################### Index Block Pairs and Correlate ###############################
-            # get station names to correlate
-            pairs = get_pairs(length(ffts), 30) # select chunk length 
-            mem = true # choose whether to favor smaller I/O (true) or less inter-core communication (false)
-            if mem
-                T_mem = @elapsed pmap(y -> correlate_mem(y), map(x->[ffts[x[1]], ffts[x[2]]], pairs))
-                println("Pairs correlated for $path from memory in $T_mem seconds.")
-            else
-                # Get pairs
-                T_savefft = @elapsed pmap(x -> save_fft(x, root_fft), ffts)
-                fft_list = joinpath.(root_fft, readdir(root_fft))
-                fft_names = [[fft_list[pairs[i][1]], fft_list[pairs[i][2]]] for i in 1:length(pairs)];
-                T_load = @elapsed pmap(x-> correlate_load(x), fft_names)
-                rm(root_fft, recursive=true) # cleanup 
-                println("Pairs correlated for $path from memory in $T_load seconds.")
-            end
-
-            num_corrs += length(ffts)*(length(ffts)+1)/2 # summary stats
-            raw_size +=foldersize("data")
-
-            # Perform cleanup of instance
-            rm("data/continuous_waveforms", recursive=true) # Remove raw data to prevent memory crash 
-            GC.gc() # clean memory 
-        catch e
-            println("Difficulty processing $(days[i]). Unexpected error. Continuing to next day.")
         end
     end
-
-    # combine single day data to month files by station pair
-    @eval @everywhere station_pair_names, month_, yr = readdir("/home/ubuntu/CORR"), Dates.monthname(Date(startdate)),Dates.year(Date(startdate)) 
-    # month = Dates.monthname(Date(startdate)) # get the name of the month
-    # yr = Dates.year(Date(startdate))
-
-    if !isdir("home/ubuntu/corr_large/$month_")
-        mkpath("home/ubuntu/corr_large/$month_")
-    end
-    if !isdir("month_index/$yr")
-        mkpath("month_index/$yr")
-    end
-
-    jld_time = @elapsed pmap(x -> write_jld2(x, "corr_large/$yr/$month_"), station_pair_names) # combine corrs by station pair and write to single file 
-
-    # as station pair names are filenames, we save filenames in a csv to read back during post-process 
-    df = DataFrame(Files = station_pair_names, paths =[string("corr_large/$yr/$month_/",elt,".jld2") for elt in station_pair_names])
-    CSV.write("month_index/$yr/$(month_).csv",df)
-
-    ################### Transfer to S3 ##########################
-
-    s3_put(aws, "seisbasin", "month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
-
-    month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
-    Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
-    println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
-
-    corr_size +=foldersize("corr_large/$yr/$month_")
-
-    println("$num_corrs total correlations processed")
-
-    ############# Clean Up and write to summary file #################
-    rm("CORR", recursive=true) # Remove single correlation data 
-    rm("corr_large/$yr/$month_", recursive=true) #remove large correlation data
-    T_end = Dates.now()
-    t_diff = T_end-T_start 
-    m_dict = Dict(:Year =>  yr, :Month =>  month_, :channels =>  num_channels, :correlations =>  num_corrs, :time => t_diff, :size_raw => float(raw_size), :size_corr => float(corr_size))
-    push!(summary, m_dict)
 end
-CSV.write("summary$yr.csv", summary)
-s3_put(aws, "seisbasin", "summary/summary$yr.csv", read("summary$yr.csv"))
-println("Done")
+pmap(x-> autocorrelate(x), fft_100_stations)
+
+# run all correlations
+pairs = get_pairs(length(fft_list_20), chunk_length); # select chunk length 
+fft_names = [[fft_list_20[pair[1]], fft_list_20[pair[2]]] for pair in pairs];
+
+
+@everywhere begin
+    function correlate_load(fft_name_ar::Array{Array{String,1},1})
+        # Load ffts for sources and receivers
+        sources = map(x-> load_fft(x, string(x[end-7:end-5])), fft_name_ar[1])
+        T_load = @elapsed receivers = map(x-> load_fft(x, string(x[end-7:end-5])), fft_name_ar[2])
+        println("Recievers loaded in $T_load seconds.")
+
+        # Correlate
+        #all2all(sources, receivers)
+        for s_fft in sources
+            for r_fft in receivers
+                T_dist = @elapsed dist = get_dist(s_fft.loc,r_fft.loc) 
+                println("Distance in $T_dist with distance $dist")
+                if (s_fft.gain <= r_fft.gain) && (dist <= 300.) 
+                    try
+                        T_correlate = @elapsed C = correlate(s_fft,r_fft, maxlag)
+                        T_mm = @elapsed cc_medianmute!(C, 10.) # remove correlation windows with high noise
+                        T_stack = @elapsed stack!(C)
+                        T_name = @elapsed pair, comp = name_corr(C), C.comp
+                        T_save = @elapsed save_named_corr(C,"CORR/$pair/$comp")
+                        println("Correlate: $T_correlate. MM: $T_mm. stack: $T_stack. name: $T_name. save:$T_save")
+                    catch e
+                        println(e)
+                    end
+                end
+            end
+        end
+    end
+end
+T_load = @elapsed pmap(x-> correlate_load(x), fft_names)
+#rm(root_fft, recursive=true) # cleanup 
+println("Pairs correlated for $path from memory in $T_load seconds.")
+
+
+# Postprocessing and stacking
+# first process autocorrelations into h5 files
+month = Dates.month(mth[1]) # get month
+autocorrs = glob("AUTOCORR/*") # list all autocorrelation sources
+autocorr_names = [join(split(auto, ".")[1:2],"."),autocorrs]
+
+autocorrs[1] # gives first autocorrelation folder
+
+name_source = "$(month)_$(autocorrs[i])"
+CORROUT = expanduser("autocorrelations/$yr/$(autocorrs[i])/")
+if !isdir(CORROUT)
+    mkpath(CORROUT)
+end
+filename = joinpath(CORROUT,"$(name_source).h5") # get output filename
+
+# Get list of files to save
+autocorr_list = glob("AUTOCORR/$(autocorrs[i])/*/*.jld2")
+C = corr_load(autocorr_list[1], convert(String, split(autocorr_list[1],"/")[1]))
+h5open(filename, "cw") do file 
+    if !haskey(read(file), "meta")
+        write(file, "meta/corr_type", C.corr_type)
+        write(file, "meta/cc_len", C.cc_len)
+        write(file, "meta/cc_step", C.cc_step)
+        write(file, "meta/whitened", C.whitened)
+        write(file, "meta/time_norm", C.time_norm)
+        write(file, "meta/notes", C.notes)
+        write(file, "meta/maxlag", C.maxlag)
+        write(file, "meta/starttime", Dates.format(u2d(C.t[1]), "yyyy-mm-dd HH:MM:SS"))
+        write(file, "meta/samp_freq", C.fs)
+        write(file, "meta/lat", C.loc[1].lat)
+        write(file, "meta/lon", C.loc[1].lon)
+        write(file, "meta/el", C.loc[1].el)
+        write(file, "meta/dep", C.loc[1].dep)
+        write(file, "meta/az", C.loc[1].az)
+        write(file, "meta/inc", C.loc[1].inc)
+    end
+    for (ind, name) in enumerate(autocorr_list)
+        # load file 
+        comp = string(split(name, "/")[end-1]) # get component
+        Cl = load_corr(name, comp)
+        # write 
+        write(file, "$comp/$(Cl.id)", Cl.corr[:])
+    end
+end
+
+# need to write correlation stacking code ....
+
+
+
+# transfer to S3

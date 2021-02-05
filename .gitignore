@@ -1,0 +1,14 @@
+# Logs
+.DS_Store
+.Rhistory 
+README.log
+Manifest.toml
+
+#Files
+Dockerfile
+/src/.DS_Store
+/src/debug.jl
+/docs/launch_EC2
+
+#Old directories - all the old files with half baked ideas
+/src/deprecated

@@ -8,7 +8,7 @@ Pkg.build("GR")
 addprocs()
 
 # Read in station locations and list source stations
-all_stations = DataFrame(CSV.File("files/full_socal.csv"))
+all_stations = DataFrame(CSV.File("files/modified_nodal.csv"))
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
 
@@ -236,7 +236,9 @@ end
 end
 
 # select start/ enddate (Default calculates for entire month: eg start_date on 003 rounds to 001)
-start_date, end_date = "2018-07-01", "2018-12-31"
+start_date, end_date = "2018-07-01", "2018-08-31"
+yr = Dates.year(Date(start_date))
+@eval @everywhere yr = $yr
 dates = divide_months(start_date, end_date)
 summary = DataFrame(Year = Int[], Month = String[], channels = Int[], correlations = Int[], time = Millisecond[], size_raw = Float64[], size_corr = Float64[])
 #Dict(:Year =  , :Month =  , :channels =  , correlations =  , time = )
@@ -251,7 +253,7 @@ for mth in dates
         try
             yr = Dates.year(days[i])
             path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
-
+            println(path)
             ############################ Data Download ###################################
             # get BH and HH data - BH is smaller, but doesn't contain all stations
             ar_filelist = pmap(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
@@ -363,12 +365,6 @@ for mth in dates
     Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
     println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
 
-    # Delete for actual run 
-    # s3_put(aws, "seisbasin", "test/month_index/$yr/$(month_).csv", read("month_index/$yr/$(month_).csv"))
-
-    # month_files = joinpath.("corr_large/$yr/$month_", readdir("corr_large/$yr/$month_"))
-    # Transfer = @elapsed pmap(x ->s3_put(aws, "seisbasin", x, read(x)), month_files)
-    # println("$(length(month_files)) correlation files transfered to $(bucket2) in $Transfer seconds!") 
     corr_size +=foldersize("corr_large/$yr/$month_")
 
     println("$num_corrs total correlations processed")
@@ -381,8 +377,8 @@ for mth in dates
     m_dict = Dict(:Year =>  yr, :Month =>  month_, :channels =>  num_channels, :correlations =>  num_corrs, :time => t_diff, :size_raw => float(raw_size), :size_corr => float(corr_size))
     push!(summary, m_dict)
 end
-CSV.write("summary$yr.csv", summary)
-s3_put(aws, "seisbasin", "summary/summary$yr.csv", read("summary$yr.csv"))
+CSV.write("summary$(yr).csv", summary)
+s3_put(aws, "seisbasin", "summary/summary($yr)_SB2_SB3.csv", read("summary$yr.csv"))
 println("Done")
 
 s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000)
