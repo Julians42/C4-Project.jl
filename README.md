@@ -49,7 +49,7 @@ vert_plot(fcorrs, name, component, filter, stacktype)
 ```
 Which produces a plot for each of the 3 selected frequency plots. For example:  
 ![Example Plot Graphic](src/assets/vertplot.png)  
-
+Also checkout our [jupyter notebook](https://github.com/Julians42/SeisCore.jl/blob/master/docs/Moveout_Feb_21.ipynb) for more plotting power!
 
 ## Reproducibility
 This section details highlights of our methodology and details how to begin AWS cloud computing in Julia for yourself!

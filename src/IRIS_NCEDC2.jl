@@ -60,10 +60,27 @@ end
 function query_FDSN(file_str::String, src::String, dday::Date)
     """ Query NCEDC and IRIS for metadata """
     println("Beginning metadata download for $src ($file_str).")
-    if src in ["SCEDC","NCEDC"]
-        return FDSNsta(file_str, src=src, s = string(dday), t = string(dday+Day(1))).id
-    else # then data is IRIS so we filter to region
-        return FDSNsta(file_str,src=src, s = string(dday), t = string(dday+Day(1)), reg=[31.,40.,-123.,-116.]).id
+    try
+        if src in ["SCEDC","NCEDC"]
+            return FDSNsta(file_str, src=src, s = string(dday), t = string(dday+Day(1))).id
+        else # then data is IRIS so we filter to region
+            return FDSNsta(file_str,src=src, s = string(dday), t = string(dday+Day(1)), reg=[31.,40.,-123.,-116.]).id
+        end
+    catch e
+        println(e)
+        println("Could not download metadata for $file_str from $src on $dday.")
+    end
+end
+function evaluate_done(yr, path)
+    iris_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "iris_waveforms/$yr/$path/", max_items=1000))]
+    ncedc_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "ncedc_waveforms/$yr/$path/", max_items=1000))]
+    println("$(length(iris_query)-1) iris waveforms and $(length(ncedc_query)-1) ncedc waveforms already downloaded for $path.")
+    if ((length(iris_query) < 20) && (yr <=2004)) || ((length(iris_query)<100) && (yr >=2005)) || ((length(ncedc_query) < 5) && yr <=  2003) || ((length(ncedc_query) < 80) && (yr >= 2004))
+        println("Continuing to download phase for $path...")
+        return false # we need to attempt to reprocess this day! 
+    else
+        println("Data is already in seisbasin for $path. Continuing to next day...")
+        return true # day is already processed
     end
 end
 
@@ -77,82 +94,107 @@ data_sources = [["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],["*.*.*.HH*","IRIS"]
 #list_queries, NCEDC_list, IRIS_list = [], [], []
 
 for i in 1:length(days)
-    yr = Dates.year(days[i])
-    path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
-    @eval @everywhere yr, path, rootdir = $yr, $path, $rootdir
-    println("Processing day $path...")
-    ##################### Query SCEDC S3 for easy stations ########################
-    ar_filelist = map(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
-    filelist_scedc_BH = ar_filelist[1]
-    filelist_scedc_HH = ar_filelist[2]
+    try 
+        yr = Dates.year(days[i])
+        path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+        @eval @everywhere yr, path, rootdir = $yr, $path, $rootdir
+        if evaluate_done(yr, path) == true
+            continue
+        end
+        ##################### Query SCEDC S3 for easy stations ########################
+        ar_filelist = map(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
+        filelist_scedc_BH = ar_filelist[1]
+        filelist_scedc_HH = ar_filelist[2]
 
-    # create dictionary and overwrite HH keys with available BH data
-    BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
-    HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
+        # create dictionary and overwrite HH keys with available BH data
+        BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
+        HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
 
-    # Convert to dictionary 
-    HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
-    BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
-    filelist_dict = merge(BH_dict, HH_dict) # BH dict overwrite HH_dict. This is essentually the union
-    filelist_scedc = collect(values(filelist_dict)) # return values as array for download
+        # Convert to dictionary 
+        HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
+        BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
+        filelist_dict = merge(BH_dict, HH_dict) # BH dict overwrite HH_dict. This is essentually the union
+        filelist_scedc = collect(values(filelist_dict)) # return values as array for download
 
-    scedc_list = map(x -> query_name(x, true), filelist_scedc)
-    scedc_brief = map(x -> query_name(x, false), filelist_scedc)
-    scedc_sta = [split(elt, ".")[2] for elt in scedc_brief]
+        scedc_list = map(x -> query_name(x, true), filelist_scedc)
+        scedc_brief = map(x -> query_name(x, false), filelist_scedc)
+        scedc_sta = [split(elt, ".")[2] for elt in scedc_brief]
 
-    save_sources = DataFrame(Bucket = vec(fill("SCEDC", (length(scedc_brief),1))), Source = scedc_list, Station = scedc_sta, ID = scedc_brief, Path = filelist_scedc)
-    # write scedc name files immediately to bucket - donwload during correlate routine
-    if !isdir(joinpath(rootdir, "scedc_path/$yr/"))
-        mkpath(joinpath(rootdir, "scedc_path/$yr/"))
-    end
-    CSV.write(joinpath(rootdir, "scedc_path/$yr/$path.csv"), save_sources)
-    s3_put(aws, "seisbasin", "scedc_path/$yr/$path.csv", read(joinpath(rootdir, "scedc_path/$yr/$path.csv")))
-    println("There are $(length(save_sources.ID)) SCEDC stations for $path.")
-    ####################### Query NCEDC and IRIS for extra missing stations ######################
-    T_list = @elapsed list_queries = map(x -> query_FDSN(x[1],x[2], days[i]), data_sources) # pmap doesn't work bc server ....
-    map(list -> filter!(x -> x[end] in ['E','N','Z'], list), list_queries) # Restrict to ENZ channels
-    data_sources_ch = [[join(split(elt,".")[1:2],".") for elt in array] for array in list_queries] 
-    data_sources_ch = [[join([split(elt,".")[1], split(elt,".")[2], elt[end]],".") for elt in array] for array in list_queries] 
+        save_sources = DataFrame(Bucket = vec(fill("SCEDC", (length(scedc_brief),1))), Source = scedc_list, Station = scedc_sta, ID = scedc_brief, Path = filelist_scedc)
+        # write scedc name files immediately to bucket - donwload during correlate routine
+        if !isdir(joinpath(rootdir, "scedc_path/$yr/"))
+            mkpath(joinpath(rootdir, "scedc_path/$yr/"))
+        end
+        CSV.write(joinpath(rootdir, "scedc_path/$yr/$path.csv"), save_sources)
+        s3_put(aws, "seisbasin", "scedc_path/$yr/$path.csv", read(joinpath(rootdir, "scedc_path/$yr/$path.csv")))
+        println("There are $(length(save_sources.ID)) SCEDC stations for $path.")
 
-    for (ind, source) in enumerate(data_sources_ch) # add new stations to dataframe
-        for (j, station) in enumerate(source)
-            if station ∉ save_sources.ID # check if already contained in list (lower priority stations won't be added)
-                push!(save_sources, [data_sources[ind][2], list_queries[ind][j], split(station,".")[2], station, list_queries[ind][j]])
+        ####################### Query NCEDC and IRIS for extra missing stations ######################
+        T_list = @elapsed list_queries = map(x -> query_FDSN(x[1],x[2], days[i]), data_sources) # pmap doesn't work bc server ....
+        map(list -> filter!(x -> x[end] in ['E','N','Z'], list), list_queries) # Restrict to ENZ channels
+        data_sources_ch = [[join(split(elt,".")[1:2],".") for elt in array] for array in list_queries] 
+        data_sources_ch = [[join([split(elt,".")[1], split(elt,".")[2], elt[end]],".") for elt in array] for array in list_queries] 
+
+        for (ind, source) in enumerate(data_sources_ch) # add new stations to dataframe
+            for (j, station) in enumerate(source)
+                if station ∉ save_sources.ID # check if already contained in list (lower priority stations won't be added)
+                    push!(save_sources, [data_sources[ind][2], list_queries[ind][j], split(station,".")[2], station, list_queries[ind][j]])
+                end
             end
         end
+
+        ####################### Download NCEDC and IRIS Data ######################
+        # Write data and then upload to seisbasin
+        if !isdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path/"))
+            mkpath(joinpath(rootdir, "ncedc_waveforms/$yr/$path/"))
+        end
+        if !isdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))
+            mkpath(joinpath(rootdir, "iris_waveforms/$yr/$path/"))
+        end
+
+        NCEDC_list = filter(x -> x.Bucket =="NCEDC", save_sources).Path
+        IRIS_list = filter(x -> x.Bucket =="IRIS", save_sources).Path
+        println("Now trying download for $(length(NCEDC_list)) NCEDC stations and $(length(IRIS_list)) IRIS stations.")
+
+        IRIS_stations = unique([string(x[1:end-1],"*") for x in IRIS_list])
+        NCEDC_stations = unique([string(x[1:end-1],"*") for x in NCEDC_list])
+        map(x -> download_data(x, "IRIS", days[i]),IRIS_stations)
+        map(x -> download_data(x, "NCEDC", days[i]),NCEDC_stations)
+        ####################### Filter and Upload data to seisbasin ######################
+        # Can use glob on ec2 - doesn't like "/" on local
+        iris_filepaths = joinpath.("iris_waveforms/$yr/$path/", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))) # duplicates contain "[NAME]" so we filter these
+        ncedc_filepaths = joinpath.("ncedc_waveforms/$yr/$path/", readdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path/")))
+        filter!(x -> !occursin(".DS_Store", x), iris_filepaths)
+        filter!(x -> !occursin(".DS_Store", x), ncedc_filepaths)
+
+        map(x -> s3_put(aws, "seisbasin", x, read(joinpath(rootdir, x))), iris_filepaths);
+        map(x -> s3_put(aws, "seisbasin", x, read(joinpath(rootdir, x))), ncedc_filepaths);
+
+        println("Transfered $(length(iris_filepaths)+length(ncedc_filepaths)) raw seisdata objects from NCEDC and IRIS to seisbasin.")
+
+        # Cleanup - doesn't delete directories because AWS batch gets mad
+        rm.(joinpath.(rootdir, "iris_waveforms/$yr/$path", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path"))), recursive=true)
+        rm.(joinpath.(rootdir, "ncedc_waveforms/$yr/$path", readdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path"))), recursive=true)
+    catch e
+        println(e)
+        println("Unable to process data for $path. Continuing ...")
     end
-
-    ####################### Download NCEDC and IRIS Data ######################
-    # Write data and then upload to seisbasin
-    if !isdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path/"))
-        mkpath(joinpath(rootdir, "ncedc_waveforms/$yr/$path/"))
-    end
-    if !isdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))
-        mkpath(joinpath(rootdir, "iris_waveforms/$yr/$path/"))
-    end
-
-    NCEDC_list = filter(x -> x.Bucket =="NCEDC", save_sources).Path
-    IRIS_list = filter(x -> x.Bucket =="IRIS", save_sources).Path
-    println("Now trying download for $(length(NCEDC_list)) NCEDC stations and $(length(IRIS_list)) IRIS stations.")
-
-    IRIS_stations = unique([string(x[1:end-1],"*") for x in IRIS_list])
-    NCEDC_stations = unique([string(x[1:end-1],"*") for x in NCEDC_list])
-    map(x -> download_data(x, "IRIS", days[i]),IRIS_stations)
-    map(x -> download_data(x, "NCEDC", days[i]),NCEDC_stations)
-    ####################### Filter and Upload data to seisbasin ######################
-    # Can use glob on ec2 - doesn't like "/" on local
-    iris_filepaths = joinpath.("iris_waveforms/$yr/$path/", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))) # duplicates contain "[NAME]" so we filter these
-    ncedc_filepaths = joinpath.("ncedc_waveforms/$yr/$path/", readdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path/")))
-    filter!(x -> !occursin(".DS_Store", x), iris_filepaths)
-    filter!(x -> !occursin(".DS_Store", x), ncedc_filepaths)
-
-    map(x -> s3_put(aws, "seisbasin", x, read(joinpath(rootdir, x))), iris_filepaths);
-    map(x -> s3_put(aws, "seisbasin", x, read(joinpath(rootdir, x))), ncedc_filepaths);
-
-    println("Transfered $(length(iris_filepaths)+length(ncedc_filepaths)) raw seisdata objects from NCEDC and IRIS to seisbasin.")
-
-    # Cleanup - doesn't delete directories because AWS batch gets mad
-    rm.(joinpath.(rootdir, "iris_waveforms/$yr/$path", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path"))), recursive=true)
-    rm.(joinpath.(rootdir, "ncedc_waveforms/$yr/$path", readdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path"))), recursive=true)
 end
 println("Finished", startdate, enddate)
+
+
+# days2 = Date(2000):Month(1):Date(2021)
+# println(days2)
+# for i in 1:length(days2)
+#     try 
+#         yr = Dates.year(days2[i])
+#         path = join([Dates.year(days2[i]),lpad(Dates.dayofyear(days2[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+#         if evaluate_done(yr, path) == true
+#             println("Returned True")
+#             continue
+#         end
+#         println("Returned False")
+#     catch e 
+#         println(e)
+#     end
+# end
