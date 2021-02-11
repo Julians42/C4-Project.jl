@@ -11,7 +11,7 @@ channel2 = "HH?"
 OUTDIR = "~/data"
 
 # functions
-function download_data(station, source::String, dday::Date)
+function download_data(station, source::String, dday::Date, yr::Int64, path::String)
     try
         # download data 
         data = get_data("FDSN", station, src=source, s=string(dday), t = string(dday+Day(1)))
@@ -84,7 +84,7 @@ function evaluate_done(yr, path)
         iris_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "iris_waveforms/$yr/$path/", max_items=1000))]
         ncedc_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "ncedc_waveforms/$yr/$path/", max_items=1000))]
         println("$(length(iris_query)-1) iris waveforms and $(length(ncedc_query)-1) ncedc waveforms already downloaded for $path.")
-        yr_num = parse(Int64, yr)
+        yr_num = convert(Int64, yr)
         if ((length(iris_query) < 20) && (yr_num <=2004)) || ((length(iris_query)<100) && (yr_num >=2005)) || ((length(ncedc_query) < 5) && yr_num <=  2003) || ((length(ncedc_query) < 80) && (yr_num >= 2004))
             println("Continuing to download phase for $path...")
             return false # we need to attempt to reprocess this day! 
@@ -106,7 +106,6 @@ function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.
         path = join([Dates.year(date),lpad(Dates.dayofyear(date),3,"0")],"_") # Yeilds "YEAR_JDY"
         @eval @everywhere yr, path, rootdir = $yr, $path, $rootdir
         if evaluate_done(yr, path) == true
-            println("Data for day $path already on seisbasin.")
             return 0
         else
             ##################### Query SCEDC S3 for easy stations ########################
@@ -172,8 +171,8 @@ function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.
 
             IRIS_stations = unique([string(x[1:end-1],"*") for x in IRIS_list])
             NCEDC_stations = unique([string(x[1:end-1],"*") for x in NCEDC_list])
-            map(x -> download_data(x, "IRIS", date),IRIS_stations)
-            map(x -> download_data(x, "NCEDC", date),NCEDC_stations)
+            map(x -> download_data(x, "IRIS", date, yr, path), IRIS_stations)
+            map(x -> download_data(x, "NCEDC", date, yr, path), NCEDC_stations)
             ####################### Filter and Upload data to seisbasin ######################
             # Can use glob on ec2 - doesn't like "/" on local
             iris_filepaths = joinpath.("iris_waveforms/$yr/$path/", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))) # duplicates contain "[NAME]" so we filter these

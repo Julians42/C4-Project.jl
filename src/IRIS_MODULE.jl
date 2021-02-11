@@ -9,11 +9,11 @@ arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"] # get date range from environment variabl
 startdate = Date(2000)+Month(arg)
 enddate = startdate+Month(1)-Day(1)
 days = startdate:Day(1):enddate
-println("Processing download for, ", startdate, " to ",enddate)
+println("Processing download for: ", startdate, " to ",enddate)
 
 data_sources = [["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]]
 
 # get seismic data for all days
 map(x -> SeisCore.get_seisdata(x, data_sources, rootdir), days)
 
-println("Finished", startdate, "to ", enddate)
+println("Finished: ", startdate, " to ", enddate)
