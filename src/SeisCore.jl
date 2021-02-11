@@ -1,17 +1,16 @@
-# Working on speedup for IRIS download
-T = @elapsed using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Glob, AWSS3
+module SeisCore
 
-rootdir = ""
-#rootdir = "/Users/julianschmitt/Downloads/Seismo/IRIS/" # set to "" if on EC2/ in container, but can run locally 
-# Functions 
+# packages
+using Base, Core, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, AWSS3, Glob
+
+# variables
 aws = aws_config(region="us-west-2")
-# aws = aws_config(creds = AWSCredentials("KEY", "SECRET_KEY"), region="us-west-2") # if running locally - careful with AWS creds!
-bucket = "scedc-pds"
-bucket2 = "seisbasin"
 network = "CI"
 channel1 = "BH?"
 channel2 = "HH?"
 OUTDIR = "~/data"
+
+# functions
 function download_data(station, source::String, dday::Date)
     try
         # download data 
@@ -42,6 +41,7 @@ function download_data(station, source::String, dday::Date)
     end
 end
 
+
 function query_name(s::String, full::Bool)
     name = convert(String, split(s,"/")[end])
     net, cha, sta, comp = name[1:2], strip(convert(String, name[3:6]),'_'), 
@@ -58,7 +58,7 @@ function get_dict_name(file::String)
     return string(station, "_", component)
 end
 function query_FDSN(file_str::String, src::String, dday::Date)
-    """ Query NCEDC and IRIS for metadata """
+    """ Query NCEDC and IRIS for metadata. Try twice """
     println("Beginning metadata download for $src ($file_str).")
     try
         if src in ["SCEDC","NCEDC"]
@@ -99,26 +99,20 @@ function evaluate_done(yr, path)
         println("Error in evaluating day. Continuing to download phase")
     end
 end
-# startdate = Date(2005, 6,1)
-arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"]
-startdate = Date(2000)+Month(arg)
-enddate = startdate+Month(1)-Day(1)
-println(startdate, enddate)
-days = startdate:Day(1):enddate
 
-data_sources = [["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]]
-#list_queries, NCEDC_list, IRIS_list = [], [], []
-
-for i in 1:length(days)
+function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],
+            ["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]], rootdir::String="")
+    """ Downloads available seismic data from NCEDC and IRIS for given date. Uploads data to seisbasin """
     try 
-        yr = Dates.year(days[i])
-        path = join([Dates.year(days[i]),lpad(Dates.dayofyear(days[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
+        yr = Dates.year(date)
+        path = join([Dates.year(date),lpad(Dates.dayofyear(date),3,"0")],"_") # Yeilds "YEAR_JDY"
         @eval @everywhere yr, path, rootdir = $yr, $path, $rootdir
         if evaluate_done(yr, path) == true
-            continue
+            println("Data for day $path already on seisbasin.")
+            return 0
         end
         ##################### Query SCEDC S3 for easy stations ########################
-        ar_filelist = map(x -> s3query(aws, days[i], enddate = days[i], network=network, channel=x),[channel1, channel2])
+        ar_filelist = map(x -> s3query(aws, date, enddate = date, network=network, channel=x),[channel1, channel2])
         filelist_scedc_BH = ar_filelist[1]
         filelist_scedc_HH = ar_filelist[2]
 
@@ -146,9 +140,15 @@ for i in 1:length(days)
         println("There are $(length(save_sources.ID)) SCEDC stations for $path.")
 
         ####################### Query NCEDC and IRIS for extra missing stations ######################
-        T_list = @elapsed list_queries = map(x -> query_FDSN(x[1],x[2], days[i]), data_sources) # pmap doesn't work bc server ....
-        map(list -> filter!(x -> x[end] in ['E','N','Z'], list), list_queries) # Restrict to ENZ channels
-        data_sources_ch = [[join(split(elt,".")[1:2],".") for elt in array] for array in list_queries] 
+        T_list = @elapsed list_queries = map(x -> query_FDSN(x[1],x[2], date), data_sources) # pmap doesn't work bc server ....
+        for list in list_queries
+            try
+                filter!(x -> x[end] in ['E','N','Z'], list)
+            catch e
+                println(e)
+                println("Likely no metadata from that source")
+            end
+        end
         data_sources_ch = [[join([split(elt,".")[1], split(elt,".")[2], elt[end]],".") for elt in array] for array in list_queries] 
 
         for (ind, source) in enumerate(data_sources_ch) # add new stations to dataframe
@@ -174,8 +174,8 @@ for i in 1:length(days)
 
         IRIS_stations = unique([string(x[1:end-1],"*") for x in IRIS_list])
         NCEDC_stations = unique([string(x[1:end-1],"*") for x in NCEDC_list])
-        map(x -> download_data(x, "IRIS", days[i]),IRIS_stations)
-        map(x -> download_data(x, "NCEDC", days[i]),NCEDC_stations)
+        map(x -> download_data(x, "IRIS", date),IRIS_stations)
+        map(x -> download_data(x, "NCEDC", date),NCEDC_stations)
         ####################### Filter and Upload data to seisbasin ######################
         # Can use glob on ec2 - doesn't like "/" on local
         iris_filepaths = joinpath.("iris_waveforms/$yr/$path/", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))) # duplicates contain "[NAME]" so we filter these
@@ -191,26 +191,11 @@ for i in 1:length(days)
         # Cleanup - doesn't delete directories because AWS batch gets mad
         rm.(joinpath.(rootdir, "iris_waveforms/$yr/$path", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path"))), recursive=true)
         rm.(joinpath.(rootdir, "ncedc_waveforms/$yr/$path", readdir(joinpath(rootdir, "ncedc_waveforms/$yr/$path"))), recursive=true)
+        return 0
     catch e
         println(e)
         println("Unable to process data for $path. Continuing ...")
+        return 1
     end
 end
-println("Finished", startdate, enddate)
-
-
-# days2 = Date(2000):Month(1):Date(2021)
-# println(days2)
-# for i in 1:length(days2)
-#     try 
-#         yr = Dates.year(days2[i])
-#         path = join([Dates.year(days2[i]),lpad(Dates.dayofyear(days2[i]),3,"0")],"_") # Yeilds "YEAR_JDY"
-#         if evaluate_done(yr, path) == true
-#             println("Returned True")
-#             continue
-#         end
-#         println("Returned False")
-#     catch e 
-#         println(e)
-#     end
-# end
+end
