@@ -11,7 +11,8 @@ addprocs()
 all_stations = DataFrame(CSV.File("files/modified_nodal.csv"))
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV"
         ,"VINE", "ROPE", "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048"]
-
+# PASC, RUS
+# Integrate all stations starting with Q
 @everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob, SeisIO.SEED
 @everywhere begin 
     function is_window(C::SeisData, cc_len::Int64)
@@ -382,3 +383,15 @@ s3_put(aws, "seisbasin", "summary/summary($yr)_SB2_SB3.csv", read("summary$yr.cs
 println("Done")
 
 s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000)
+
+
+
+
+
+function rfft(R::RawData,dims::Int=1)
+    FFT = rfft(R.x,dims)
+    FFT.fft ./= fftfreq(length(C.corr)).* 1im .* 2π
+    return FFTData(R.name, R.id,R.loc, R.fs, R.gain, R.freqmin, R.freqmax,
+                 R.cc_len, R.cc_step, R.whitened, R.time_norm, R.resp,
+                 R.misc, R.notes, R.t, FFT)
+end
