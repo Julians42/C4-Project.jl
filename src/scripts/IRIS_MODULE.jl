@@ -6,7 +6,7 @@ println(T)
 #rootdir = "/Users/julianschmitt/Downloads/Seismo/IRIS/" # set to "" if on EC2/ in container, but can run locally 
 rootdir = ""
 arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"] # get date range from environment variable
-startdate = Date(2000)+Month(arg)
+startdate = Date(2004)+Month(arg)
 enddate = startdate+Month(1)-Day(1)
 days = startdate:Day(1):enddate
 println("Processing download for: ", startdate, " to ",enddate)
