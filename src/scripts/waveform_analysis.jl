@@ -111,15 +111,16 @@ events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = 
 
 # download data
 yr = "2019"
-
-
 @eval @everywhere locations = $locations
 @eval @everywhere events = $events
 
+
+
+
+########### Plotting Script ############
+ 
 for (ind, row) in enumerate(eachrow(events))
-    if ind ==1
-        continue
-    end
+
     path = join(["2019","$(row.julian)"],"_")
     files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
     ec2download(aws, "seisbasin", files, "~/")
@@ -139,5 +140,68 @@ pmap(x -> plot_waveforms2(x), eachrow(events))
 # file transfer 
 #scp -i my_aws_key.pem /Users/julianschmitt/Documents/Schoolwork/Seismology/SeisCore.jl/docs/modified_nodal.csv ubuntu@ec2-34-223-59-140.us-west-2.compute.amazonaws.com:files/
 # scp -i my_aws_key.pem ubuntu@ec2-34-223-59-140.us-west-2.compute.amazonaws.com:waveform_analysis/ /Users/julianschmitt/Downloads/waveform_analysis/ --recursive
+####################################
 
 
+
+############ Extract event raw waveforms and upload to aws for Laura! #############
+# download data 
+paths = Array{String,1}(undef, 0)
+for (ind, row) in enumerate(eachrow(events))
+
+    path = join(["2019","$(row.julian)"],"_")
+    push!(paths, path)
+    files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
+    ec2download(aws, "seisbasin", files, "~/")
+end
+@everywhere using HDF5
+locations = DataFrame(CSV.File("files/full_socal.csv"))
+
+@eval @everywhere locations = $locations
+# read files, split and write to h5
+@everywhere begin
+    function get_event_data(row)
+        files = glob("continuous_waveforms/2019/2019_$(row.julian)/*")
+        startsplit, endsplit = row.datetime, row.datetime+Dates.Minute(10)
+        h5open("sample_events/$(row.julian).h5", "cw") do file
+            if !haskey(read(file), "meta")
+                write(file, "meta/date", "$(row.date)")
+                write(file, "meta/datetime", "$(row.datetime)")
+                write(file, "meta/lat", row.lat)
+                write(file, "meta/lon", row.lon)
+                write(file, "meta/magnitude", row.magnitude)
+                write(file, "meta/julian", row.julian)
+            end
+            for seis in files
+                try
+                    if !haskey(read(file), station)
+                        # grab data, split, and add location
+                        f = tsplit(read_data("mseed", seis), startsplit, endsplit) # split from t=0 to 10 minutes after
+                        network, station = split(f.id[1], ".")[1], split(f.id[1],".")[2]
+                        LLE_geo(f, locations) # add location 
+                        dist = get_dist(f.loc[1], GeoLoc(lat=row.lat, lon=row.lon)) # get distance
+                        # write metadata
+                        write(file, "$station/dist", dist)
+                        write(file, "$station/lat", f.loc[1].lat)
+                        write(file, "$station/lon", f.loc[1].lon)
+                        write(file, "$station/el", f.loc[1].el)
+                        write(file, "$station/id", f.id)
+                        # write data
+                        write(file, "$station/waveform", f.x[1])
+                    end
+                catch e
+                    println(e)
+                    println(seis)
+                end
+            end
+        end
+    end
+end
+
+T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
+
+
+# upload to s3 
+event_files = glob("sample_events/*")
+
+pmap(x -> s3_put(aws, "seisbasin", x, read(x)), event_files)

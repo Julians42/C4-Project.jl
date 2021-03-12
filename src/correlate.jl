@@ -1,6 +1,6 @@
 export correlate_day, stack_h5, preprocess, correlate_block, LLE_geo, add_location, rfft_raw,
         cc_medianmute, cc_medianmute!, name_corr, save_named_corr, load_corrs, write_jld2,
-        foldersize, get_dict_name, get_scedc_files
+        foldersize, get_dict_name
 
 
 # main processing functions
@@ -302,20 +302,4 @@ function get_dict_name(file::String)
     station = convert(String, split(split(file,"/")[end],"_")[1])
     component = split(file,"/")[end][10:12]
     return string(station, "_", component)
-end
-function get_scedc_files(dd::Date)
-    ar_filelist = pmap(x -> s3query(aws, dd, enddate = dd, network=network, channel=x),["BH?", "HH?"])
-    filelist_scedc_BH = ar_filelist[1]
-    filelist_scedc_HH = ar_filelist[2]
-    # create dictionary and overwrite HH keys with available BH data
-
-    BH_keys = [get_dict_name(file) for file in filelist_scedc_BH]
-    HH_keys = [get_dict_name(file) for file in filelist_scedc_HH]
-
-    # Convert to dictionary 
-    HH_dict = Dict([(name, file) for (name, file) in zip(HH_keys, filelist_scedc_HH)]) 
-    BH_dict = Dict([(name, file) for (name, file) in zip(BH_keys, filelist_scedc_BH)]) 
-    filelist_dict = merge(HH_dict, BH_dict) # BH dict overwrite HH_dict. This is essentually the union
-    filelist_scedc = collect(values(filelist_dict)) # return values as array for download
-    return filelist_scedc
 end

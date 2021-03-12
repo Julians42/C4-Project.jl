@@ -2,39 +2,55 @@ export download_data, get_scedc_files, query_name, get_dict_name, query_FDSN, ev
 
 
 
-function download_data(station, source::String, dday::Date, yr::Int64, path::String, rootdir::String="")
+function download_data(station, source::String, dday::Date, yr::Int64, path::String, aws::Dict{Symbol, Any}, rootdir::String="")
+    """ Stream data from IRIS and NCEDC servers to local and then to seisbasin """
     try
-        # download data 
         data = get_data("FDSN", station, src=source, s=string(dday), t = string(dday+Day(1)))
         println("Downloaded data for $station on $dday")
         # save data
         for ind in 1:3
             try
                 datum = data[ind]
+                println(datum.id)
                 if (source == "NCEDC") && (datum !=nothing)
                     if length(datum.x)>500000 # check second since NCEDC and IRIS send different formats
-                        #println(joinpath(rootdir, "ncedc_waveforms/$yr/$path/$(datum.id)"))
-                        wseis(joinpath(rootdir, "ncedc_waveforms/$yr/$path/$(datum.id)"), datum)
+
+                        # filepathing and directories
+                        fpath, upath = joinpath(rootdir, "ncedc_waveforms/$yr/$path/$(datum.id)"),"ncedc_waveforms/$yr/$path/$(datum.id)"
+                        if !isdir(dirname(fpath))
+                            mkpath(dirname(fpath))
+                        end
+
+                        # write, upload, and cleanup!
+                        wseis(fpath, datum)
+                        s3_put(aws, "seisbasin", upath, read(fpath))
+                        rm(fpath)
                     end
                 else # data is from IRIS
+                    println(typeof(datum), "  ", length(SeisData(datum).x[1]))
                     if (datum !=nothing) && (length(SeisData(datum).x[1])>500000)
-                        println("SeisData from IRIS, waveform length: $(length(SeisData(datum).x[1]))")
-                        fpath = joinpath(rootdir, "iris_waveforms/$yr/$path/$(datum.id)")
-                        wseis(fpath, SeisData(datum)) # write seismic data 
-                        # upload to seisbasin and clean up
-                        s3_put(aws, "seisbasin", fpath, read(fpath))
+
+                        # filepathing and directories
+                        fpath, upath = joinpath(rootdir, "iris_waveforms/$yr/$path/$(datum.id)"), "iris_waveforms/$yr/$path/$(datum.id)"
+                        if !isdir(dirname(fpath))
+                            mkpath(dirname(fpath))
+                        end
+
+                        # write, upload, and cleanup!
+                        wseis(fpath, SeisData(datum))
+                        s3_put(aws, "seisbasin", upath, read(fpath))
                         rm(fpath)
                     end
                 end
-            catch e
-                println("Data Integrity Check Failed!")
+            catch 
+                println("Difficutly processing $station.")
             end
         end
-    catch e
-        println("Could not download data for $station.")
+    catch
+        println("Cannot download file!")
     end
 end
-function get_scedc_files(dd::Date)
+function get_scedc_files(dd::Date, aws::Dict{Symbol, Any})
     ar_filelist = pmap(x -> s3query(aws, dd, enddate = dd, network=network, channel=x),["BH?", "HH?"])
     filelist_scedc_BH = ar_filelist[1]
     filelist_scedc_HH = ar_filelist[2]
@@ -50,7 +66,6 @@ function get_scedc_files(dd::Date)
     filelist_scedc = collect(values(filelist_dict)) # return values as array for download
     return filelist_scedc
 end
-
 function query_name(s::String, full::Bool)
     name = convert(String, split(s,"/")[end])
     net, cha, sta, comp = name[1:2], strip(convert(String, name[3:6]),'_'), 
@@ -90,14 +105,14 @@ function query_FDSN(file_str::String, src::String, dday::Date)
         end
     end
 end
-function evaluate_done(yr, path)
+function evaluate_done(yr, path, aws)
     try
         #iris_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "iris_waveforms/$yr/$path/", max_items=1000))]
         #ncedc_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "ncedc_waveforms/$yr/$path/", max_items=1000))]
-        iris_path, ncedc_path = S3Path("s3://seisbasin/iris_waveforms/$yr/$path", aws), S3Path("s3://seisbasin/ncedc_waveforms/$yr/$path", aws)
+        iris_path, ncedc_path = S3Path("s3://seisbasin/iris_waveforms/$yr/$path/", config=aws), S3Path("s3://seisbasin/ncedc_waveforms/$yr/$path/", config=aws)
         iris_query, ncedc_query = convert.(String, readdir(iris_path)), convert.(String, readdir(ncedc_path))
         println("$(length(iris_query)-1) iris waveforms and $(length(ncedc_query)-1) ncedc waveforms already downloaded for $path.")
-        yr_num = convert(Int64, yr)
+        yr_num = parse(Int64, yr)
         if ((length(iris_query) < 20) && (yr_num <=2004)) || ((length(iris_query)<100) && (yr_num >=2005)) || ((length(ncedc_query) < 5) && yr_num <=  2003) || ((length(ncedc_query) < 80) && (yr_num >= 2004))
             println("Continuing to download phase for $path...")
             return false # we need to attempt to reprocess this day! 
@@ -108,21 +123,21 @@ function evaluate_done(yr, path)
     catch e
         println(e)
         println("Error in evaluating day. Continuing to download phase")
+        return false
     end
 end
-
-function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],
+function get_seisdata(date::Date, aws::Dict{Symbol,Any}, data_sources::Array{Array{String,1},1}=[["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],
             ["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]], rootdir::String="")
     """ Downloads available seismic data from NCEDC and IRIS for given date. Uploads data to seisbasin """
     try 
         yr = Dates.year(date)
         path = join([Dates.year(date),lpad(Dates.dayofyear(date),3,"0")],"_") # Yeilds "YEAR_JDY"
         @eval @everywhere yr, path, rootdir = $yr, $path, $rootdir
-        if evaluate_done(yr, path) == true
+        if evaluate_done(yr, path, aws)
             return 0
         else
             ##################### Query SCEDC S3 for easy stations ########################
-            filelist_scedc = get_scedc_files(date)
+            filelist_scedc = get_scedc_files(date, aws)
 
             scedc_list = map(x -> query_name(x, true), filelist_scedc)
             scedc_brief = map(x -> query_name(x, false), filelist_scedc)
@@ -172,8 +187,8 @@ function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.
 
             IRIS_stations = unique([string(x[1:end-1],"*") for x in IRIS_list])
             NCEDC_stations = unique([string(x[1:end-1],"*") for x in NCEDC_list])
-            map(x -> download_data(x, "IRIS", date, yr, path), IRIS_stations)
-            map(x -> download_data(x, "NCEDC", date, yr, path), NCEDC_stations)
+            map(x -> download_data(x, "IRIS", date, yr, path, aws), IRIS_stations)
+            map(x -> download_data(x, "NCEDC", date, yr, path, aws), NCEDC_stations)
             ####################### Filter and Upload data to seisbasin ######################
             # Can use glob on ec2 - doesn't like "/" on local
             # iris_filepaths = joinpath.("iris_waveforms/$yr/$path/", readdir(joinpath(rootdir, "iris_waveforms/$yr/$path/"))) # duplicates contain "[NAME]" so we filter these
@@ -193,7 +208,9 @@ function get_seisdata(date::Date, data_sources::Array{Array{String,1},1}=[["*.*.
         end
     catch e
         println(e)
+        path = join([Dates.year(date),lpad(Dates.dayofyear(date),3,"0")],"_") # Yeilds "YEAR_JDY"
         println("Unable to process data for $path. Continuing ...")
         return 1
     end
 end
+
