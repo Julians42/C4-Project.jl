@@ -174,20 +174,27 @@ locations = DataFrame(CSV.File("files/full_socal.csv"))
             end
             for seis in files
                 try
-                    if !haskey(read(file), station)
-                        # grab data, split, and add location
-                        f = tsplit(read_data("mseed", seis), startsplit, endsplit) # split from t=0 to 10 minutes after
-                        network, station = split(f.id[1], ".")[1], split(f.id[1],".")[2]
-                        LLE_geo(f, locations) # add location 
-                        dist = get_dist(f.loc[1], GeoLoc(lat=row.lat, lon=row.lon)) # get distance
-                        # write metadata
-                        write(file, "$station/dist", dist)
-                        write(file, "$station/lat", f.loc[1].lat)
-                        write(file, "$station/lon", f.loc[1].lon)
-                        write(file, "$station/el", f.loc[1].el)
-                        write(file, "$station/id", f.id)
+                    # grab data, split, and add location
+                    f = tsplit(read_data("mseed", seis), startsplit, endsplit) # split from t=0 to 10 minutes after
+                    network, station = split(f.id[1], ".")[1], split(f.id[1],".")[2]
+                    comp = string(f.id[1][end])
+                    LLE_geo(f, locations) # add location 
+                    dist = get_dist(f.loc[1], GeoLoc(lat=row.lat, lon=row.lon)) # get distance
+                    # if !haskey(read(file), "$station/meta") && !haskey(read(file), "$station/meta/dist")
+                    #     try
+                    #         # write metadata
+                    #         write(file, "$station/meta/dist", dist)
+                    #         write(file, "$station/meta/lat", f.loc[1].lat)
+                    #         write(file, "$station/meta/lon", f.loc[1].lon)
+                    #         write(file, "$station/meta/el", f.loc[1].el)
+                    #         write(file, "$station/meta/id", f.id[1])
+                    #     catch
+                    #         println("Failed in metadata")
+                    #     end
+                    # end
+                    if !haskey(read(file), "$station/$comp")
                         # write data
-                        write(file, "$station/waveform", f.x[1])
+                        write(file, "$station/$comp", f.x[1])
                     end
                 catch e
                     println(e)
@@ -197,6 +204,9 @@ locations = DataFrame(CSV.File("files/full_socal.csv"))
         end
     end
 end
+if !isdir("sample_events")
+    mkpath("sample_events")
+end
 
 T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
 
@@ -205,3 +215,11 @@ T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
 event_files = glob("sample_events/*")
 
 pmap(x -> s3_put(aws, "seisbasin", x, read(x)), event_files)
+println("Done")
+
+
+# test file
+fid = h5open(event_files[1],"r")
+A = read(fid)
+keys(A)
+keys(A["B1131"]["Z"]["waveform"])
