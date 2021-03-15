@@ -50,8 +50,8 @@ function download_data(station, source::String, dday::Date, yr::Int64, path::Str
         println("Cannot download file!")
     end
 end
-function get_scedc_files(dd::Date, aws::Dict{Symbol, Any})
-    ar_filelist = pmap(x -> s3query(aws, dd, enddate = dd, network=network, channel=x),["BH?", "HH?"])
+function get_scedc_files(dd::Date, aws::AWSConfig)
+    ar_filelist = map(x -> s3query(aws, dd, enddate = dd, network="CI", channel=x),["BH?", "HH?"])
     filelist_scedc_BH = ar_filelist[1]
     filelist_scedc_HH = ar_filelist[2]
     # create dictionary and overwrite HH keys with available BH data
@@ -105,15 +105,14 @@ function query_FDSN(file_str::String, src::String, dday::Date)
         end
     end
 end
-function evaluate_done(yr, path, aws)
+function evaluate_done(yr::Int64, path::String, aws::AWSConfig)
     try
         #iris_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "iris_waveforms/$yr/$path/", max_items=1000))]
         #ncedc_query = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "ncedc_waveforms/$yr/$path/", max_items=1000))]
         iris_path, ncedc_path = S3Path("s3://seisbasin/iris_waveforms/$yr/$path/", config=aws), S3Path("s3://seisbasin/ncedc_waveforms/$yr/$path/", config=aws)
         iris_query, ncedc_query = convert.(String, readdir(iris_path)), convert.(String, readdir(ncedc_path))
         println("$(length(iris_query)-1) iris waveforms and $(length(ncedc_query)-1) ncedc waveforms already downloaded for $path.")
-        yr_num = parse(Int64, yr)
-        if ((length(iris_query) < 20) && (yr_num <=2004)) || ((length(iris_query)<100) && (yr_num >=2005)) || ((length(ncedc_query) < 5) && yr_num <=  2003) || ((length(ncedc_query) < 80) && (yr_num >= 2004))
+        if ((length(iris_query) < 20) && (yr <=2004)) || ((length(iris_query)<100) && (yr >=2005)) || ((length(ncedc_query) < 5) && yr <=  2003) || ((length(ncedc_query) < 80) && (yr >= 2004))
             println("Continuing to download phase for $path...")
             return false # we need to attempt to reprocess this day! 
         else
@@ -126,7 +125,7 @@ function evaluate_done(yr, path, aws)
         return false
     end
 end
-function get_seisdata(date::Date, aws::Dict{Symbol,Any}, data_sources::Array{Array{String,1},1}=[["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],
+function get_seisdata(date::Date, aws::AWSConfig, data_sources::Array{Array{String,1},1}=[["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],
             ["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]], rootdir::String="")
     """ Downloads available seismic data from NCEDC and IRIS for given date. Uploads data to seisbasin """
     try 

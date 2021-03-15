@@ -1,5 +1,5 @@
 include("SeisCore.jl")
-T=@elapsed using .SeisCore, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, JLD2, Glob, AWSS3
+T=@elapsed using .SeisCore, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, Distributed, JLD2, Glob, AWSS3
 println(T)
 
 # Variables
