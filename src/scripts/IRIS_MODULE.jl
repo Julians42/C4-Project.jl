@@ -15,14 +15,17 @@ OUTDIR = "~/data"
 
 # get date range from environment variable
 arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"]
-startdate = Date(2004)+Month(arg)
-enddate = startdate+Month(1)-Day(1)
-days = startdate:Day(1):enddate
-println("Processing download for: ", startdate, " to ",enddate)
+# startdate = Date(2004)+Month(arg)
+# enddate = startdate+Month(1)-Day(1)
+# days = startdate:Day(1):enddate
+# println("Processing download for: ", startdate, " to ",enddate)
+dday = Date(2004) + Day(arg)
 
 data_sources = [["*.*.*.HH*","NCEDC"],["*.*.*.BH*","NCEDC"],["*.*.*.HH*","IRIS"],["*.*.*.BH*","IRIS"]]
 
 # get seismic data for all days
-map(x -> SeisCore.get_seisdata(x, aws, data_sources, rootdir), days)
+#map(x -> SeisCore.get_seisdata(x, aws, data_sources, rootdir), days)
+SeisCore.get_seisdata(dday, aws, data_sources, rootdir)
 
-println("Finished: ", startdate, " to ", enddate)
+#println("Finished: ", startdate, " to ", enddate)
+println("Finished $dday.")

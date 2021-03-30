@@ -2,7 +2,7 @@ export download_data, get_scedc_files, query_name, get_dict_name, query_FDSN, ev
 
 
 
-function download_data(station, source::String, dday::Date, yr::Int64, path::String, aws::Dict{Symbol, Any}, rootdir::String="")
+function download_data(station, source::String, dday::Date, yr::Int64, path::String, aws::AWSConfig, rootdir::String="")
     """ Stream data from IRIS and NCEDC servers to local and then to seisbasin """
     try
         data = get_data("FDSN", station, src=source, s=string(dday), t = string(dday+Day(1)))

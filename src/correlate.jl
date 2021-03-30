@@ -1,6 +1,6 @@
 export correlate_day, stack_h5, preprocess, correlate_block, LLE_geo, add_location, rfft_raw,
         cc_medianmute, cc_medianmute!, name_corr, save_named_corr, load_corrs, write_jld2,
-        foldersize, get_dict_name
+        foldersize, get_dict_name, list_name
 
 
 # main processing functions
@@ -11,7 +11,7 @@ function correlate_day(dd::Date, sources::Array{String,1}=sources, all_stations:
     # get filepaths for source stations - would be faster if they're available
     #s3_get_file(aws, "seisbasin", "scedc_path/$yr/$path.csv", "scedc_path/$yr/$path.csv")
     #scedc_files = DataFrame(CSV.File("scedc_path/$yr/$path.csv")).Path
-    scedc_files = get_scedc_files(dd)
+    scedc_files = get_scedc_files(dd, aws)
     filter!(x -> any(occursin.(sources, x)), scedc_files)
 
     # filepaths for nodes
@@ -110,17 +110,18 @@ function stack_h5(tf::String, postfix::String)
 end
 
 # subroutines
-function preprocess(file::String,  accelerometer::Bool=false,
+function preprocess(file::String,  accelerometer::Bool=false, rootdir::String="", samp_rates::Array{Float64, 1}=[20., 100.],
                         freqmin::Float64=freqmin, freqmax::Float64=freqmax, cc_step::Int64=cc_step, 
-                        cc_len::Int64=cc_len, half_win::Int64=half_win, water_level::Float64=water_level, samp_rate::Float64=fs)
+                        cc_len::Int64=cc_len, half_win::Int64=half_win, water_level::Float64=water_level, 
+                        all_stations::DataFrame=all_stations, path::String=path)
     """
         Load raw seisdata file and process, saving to fft
     """
     try
         data = SeisData()
-        try # assume mseed
+        if occursin(".ms", file)
             read_data!(data, "mseed", file)
-        catch
+        else # data is SeisIO native from NCEDC/IRIS
             read_data!(data, "seisio", file)
         end
         gaps = size(data.t[1])[1] # N-2 gaps (eg gaps = 12 tests for 10 gaps)
@@ -131,31 +132,33 @@ function preprocess(file::String,  accelerometer::Bool=false,
         if gaps < 25 && any(startend) # If few gaps and sufficient (2/3) data present, data is clean
             try
                 add_location(data, all_stations)
-                S = SeisData()
-                try
-                    S = process_raw(data, samp_rate)
-                catch # trying to sample non 100Hz data at 100 Hz - skip resampling 
-                    S = process_raw(data, data.fs[1])
+                for samp_rate in samp_rates
+                    S = SeisData()
+                    try
+                        S = process_raw(data, samp_rate)
+                    catch # trying to sample non 100Hz data at 100 Hz - skip resampling 
+                        S = process_raw(data, data.fs[1])
+                    end
+                    R = RawData(S,cc_len,cc_step)
+                    SeisNoise.detrend!(R)
+                    SeisNoise.taper!(R)
+                    bandpass!(R,freqmin,freqmax,zerophase=true)
+                    FFT = nothing
+                    if accelerometer # accelerometer - so we integrate
+                        FFT = rfft_raw(R,1)
+                    else # then its a seismometer
+                        FFT = compute_fft(R)
+                    end
+                    coherence!(FFT,half_win, water_level)
+                    try # save fft 
+                        root_fft = "ffts/$path/$(Int(samp_rate))/"
+                        save_fft(FFT, joinpath(rootdir, root_fft))
+                    catch e
+                        println(e)
+                    end
                 end
-                R = RawData(S,cc_len,cc_step)
-                SeisNoise.detrend!(R)
-                SeisNoise.taper!(R)
-                bandpass!(R,freqmin,freqmax,zerophase=true)
-                FFT = nothing
-                if accelerometer # accelerometer - so we integrate
-                    FFT = rfft_raw(R,1)
-                else # then its a seismometer
-                    FFT = compute_fft(R)
-                end
-                coherence!(FFT,half_win, water_level)
-                try # save fft 
-                    root_fft = "ffts/$path/"
-                    save_fft(FFT, root_fft)
-                catch e
-                    println(e)
-                end
-                return data.id[1]
                 println("Successfully processed $(data.id[1])")
+                return data.id[1]
             catch e
                 println(e)
             end
@@ -201,12 +204,12 @@ function LLE_geo(station, df)
     end
 end
 function add_location(s::SeisData,df::DataFrame)
-    """ Adds locations to array of seisdata from a dataframe """
+    """ Adds locations to SeisData object from a dataframe """
     name = split(s.name[1],".")[2]
     geo = LLE_geo(name, df)
     if !isnothing(geo)
         s.loc[1] = geo
-    else
+    else 
         println("Station $name can't be found in the dataframe")
     end
 end
@@ -302,4 +305,14 @@ function get_dict_name(file::String)
     station = convert(String, split(split(file,"/")[end],"_")[1])
     component = split(file,"/")[end][10:12]
     return string(station, "_", component)
+end
+function list_name(s::String)
+    name = convert(String, split(s,"/")[end])
+    if occursin("continuous", s)
+        net, cha, sta, comp = name[1:2], strip(convert(String, name[3:6]),'_'), 
+                            strip(convert(String, name[11:12]),'_'), name[8:10]
+        return join([net, cha, sta, comp],".")
+    else
+        return name
+    end
 end

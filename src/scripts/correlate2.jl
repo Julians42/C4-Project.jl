@@ -5,7 +5,7 @@ T = @elapsed using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC,
 addprocs()
 @everywhere using SeisIO, SeisNoise, Dates, CSV, DataFrames,SCEDC, AWSCore, StructArrays, AWSS3, Statistics, JLD2, Glob, AbstractFFTs, HDF5
 # Read in station locations and list source stations
-# scp -i my_aws_key.pem /Users/julianschmitt/Downloads/updated_sources.csv ubuntu@ec2-34-222-159-63.us-west-2.compute.amazonaws.com:files/
+# scp -i my_aws_key.pem /Users/julianschmitt/Downloads/updated_sources.csv ubuntu@ec2-52-43-151-189.us-west-2.compute.amazonaws.com:files/
 all_stations = DataFrame(CSV.File("files/updated_sources.csv"))
 @eval @everywhere all_stations = $all_stations
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE", 
@@ -34,7 +34,7 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
             println("Station $name can't be found in the dataframe")
         end
     end
-    function preprocess(file::String,  accelerometer::Bool=false,
+    function preprocess(file::String,  accelerometer::Bool=false, rootdir::String="",
                             freqmin::Float64=freqmin, freqmax::Float64=freqmax, cc_step::Int64=cc_step, 
                             cc_len::Int64=cc_len, half_win::Int64=half_win, water_level::Float64=water_level, samp_rate::Float64=fs)
         """
@@ -73,7 +73,7 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
                     end
                     coherence!(FFT,half_win, water_level)
                     try # save fft 
-                        root_fft = "ffts/$path/"
+                        root_fft = joinpath(rootdir, "ffts/$path/")
                         save_fft(FFT, root_fft)
                     catch e
                         println(e)
@@ -193,7 +193,7 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
     function stack_h5(tf::String, postfix::String)
         from_s = glob("CORR/$tf*/*/*")
         found_receivers = unique([join(split(f,".")[4:5],".") for f in from_s])
-        components = ["EE","EN","EZ","NN","NZ","ZZ"]
+        components = ["EE","EN","EZ", "NE", "NN","NZ", "ZE", "ZN", "ZZ"]
         fname = join([tf, postfix, ".h5"])
         filename = joinpath("nodestack/$yr", fname)
         if !isdir(dirname(filename))
@@ -314,11 +314,12 @@ function correlate_day(dd::Date, sources::Array{String,1}=sources, all_stations:
     T_b = @elapsed pmap(f -> preprocess(f), broadbands)
     T_a = @elapsed pmap(f -> preprocess(f, true), accelerometers)
     println("Preprocessing Completed")
+
     # get indices for block correlation
     fft_paths = glob("ffts/$path/*")
     sources = filter(f -> any(occursin.(sources, f)), fft_paths)
     recievers = filter(f -> !any(occursin.(sources, f)), fft_paths)
-    reciever_blocks = collect(Iterators.partition(recievers, convert(Int64, ceil(length(recievers/nprocs()))))) # chunk into 25 recievers to streamline IO and speed computation 
+    reciever_blocks = collect(Iterators.partition(recievers, convert(Int64, ceil(length(recievers)/nprocs())))) # chunk into 25 recievers to streamline IO and speed computation 
     println("Now Correlating $(length(reciever_blocks)) correlation blocks!")
     Tcorrelate = @elapsed pmap(rec_files -> correlate_block(sources, collect(rec_files), maxlag), reciever_blocks)
     rm("data/continuous_waveforms", recursive=true) # cleanup raw data
@@ -336,7 +337,7 @@ end
     channel1 = "BH?"
     channel2 = "HH?"
     OUTDIR = "~/data"
-    startdate, enddate = "2019-05-11", "2019-06-16"
+    startdate, enddate = "2019-11-10", "2019-12-15"
 end
 # 2017
 # startdate, enddate = "2017-01-26", "2017-03-26"
@@ -344,9 +345,12 @@ end
 # startdate, enddate = "2018-07-20","2018-08-27"
 # 2019
 # startdate, enddate = "2019-05-11", "2019-06-16"
+# startdate, enddate = "2019-11-10", "2019-12-15"
 
 yr = Dates.year(Date(startdate))
-dates = Date(startdate):Day(1):Date(enddate)
+#dates = vcat(collect(Date("2019-05-11"):Day(1):Date("2019-06-16")), collect(Date(startdate):Day(1):Date(enddate)))
+dates = collect(Date(startdate):Day(1):Date(enddate))
+
 job_id = join(["_", Dates.year(Date(startdate))])
 @eval @everywhere yr = $yr
 ################## Correlate ####################
