@@ -12,7 +12,7 @@ loadcolorscheme(:cm_maxamp,ColorSchemes.gist_heat.colors[end-30:-1:1], "maxamp c
 
 addprocs()
 @everywhere begin 
-    using AWSCore, AWSS3, ColorSchemes, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, AWSS3, Glob, Plots
+    using AWSCore, AWSS3, ColorSchemes, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, AWSS3, Glob, Plots, HDF5
     aws = aws_config(region="us-west-2")
 end
 @everywhere begin 
@@ -90,27 +90,36 @@ end
         sync!(S, s=s, t=t)
         detrend!(S)
         taper!(S)
-        filtfilt!(S, fl=0.1, fh=1., np=1)
+        filtfilt!(S, fl=0.05, fh=10., np=1)
         return S
     end
 end
 # get locations of nodes etc
-locations = DataFrame(CSV.File("files/modified_nodal.csv"))
+#locations = DataFrame(CSV.File("files/modified_nodal.csv"))
 rootdir=""
 
 # create event date catelog 
-dates = [Date(2019, 11,12), Date(2019, 11, 13), Date(2019, 12,11), Date(2019, 12, 5), Date(2019, 11,29)]
-dt = [DateTime(2019, 11,12, 2,13,52,180), DateTime(2019, 11, 13, 19,26,53,240), DateTime(2019, 12,11,2,48,19,960),
-        DateTime(2019,12,5,8,55,31,650),DateTime(2019,11,29,0,49,42,870)]
-magnitudes = [3.97, 3.92, 3.87, 3.79, 3.72]
-lat = [32.79133, 35.60517, 31.70350, 35.69667, 35.71350]
-lon = [-115.54733, -117.40750,-116.15600, -117.61167,-117.56867]
-julian = [convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(2019))))+1 for dt2 in dt]
+# dates = [Date(2019, 11,12), Date(2019, 11, 13), Date(2019, 12,11), Date(2019, 12, 5), Date(2019, 11,29)]
+# dt = [DateTime(2019, 11,12, 2,13,52,180), DateTime(2019, 11, 13, 19,26,53,240), DateTime(2019, 12,11,2,48,19,960),
+#         DateTime(2019,12,5,8,55,31,650),DateTime(2019,11,29,0,49,42,870)]
+# magnitudes = [3.97, 3.92, 3.87, 3.79, 3.72]
+# lat = [32.79133, 35.60517, 31.70350, 35.69667, 35.71350]
+# lon = [-115.54733, -117.40750,-116.15600, -117.61167,-117.56867]
+# julian = [convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(2019))))+1 for dt2 in dt]
+# println(dates)
+# events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = magnitudes, julian = julian)
+
+
+dates = [Date(2017, 2,10)]
+dt = [DateTime(2017, 2,10, 10,10,32)]
+magnitudes = [3.4]
+lat = [34.131]
+lon = [-117.046]
+julian = [convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(2017))))+1 for dt2 in dt]
 println(dates)
 events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = magnitudes, julian = julian)
-
 # download data
-yr = "2019"
+yr = "2017"
 @eval @everywhere locations = $locations
 @eval @everywhere events = $events
 
@@ -119,23 +128,23 @@ yr = "2019"
 
 ########### Plotting Script ############
  
-for (ind, row) in enumerate(eachrow(events))
+# for (ind, row) in enumerate(eachrow(events))
 
-    path = join(["2019","$(row.julian)"],"_")
-    files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
-    ec2download(aws, "seisbasin", files, "~/")
-    plot_waveforms2(row)
-end
+#     path = join(["2019","$(row.julian)"],"_")
+#     files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
+#     ec2download(aws, "seisbasin", files, "~/")
+#     plot_waveforms2(row)
+# end
 
-for (ind, row) in enumerate(eachrow(events))
-    row1 = events[1,:]
-    path = join(["2019","$(row1.julian)"],"_")
-    #files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
-    #ec2download(aws, "seisbasin", files, "~/")
-    println(row1)
-    plot_waveforms2(row1)
-end
-pmap(x -> plot_waveforms2(x), eachrow(events))
+# for (ind, row) in enumerate(eachrow(events))
+#     row1 = events[1,:]
+#     path = join(["2019","$(row1.julian)"],"_")
+#     #files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
+#     #ec2download(aws, "seisbasin", files, "~/")
+#     println(row1)
+#     plot_waveforms2(row1)
+# end
+# pmap(x -> plot_waveforms2(x), eachrow(events))
 
 # file transfer 
 #scp -i my_aws_key.pem /Users/julianschmitt/Documents/Schoolwork/Seismology/SeisCore.jl/docs/modified_nodal.csv ubuntu@ec2-34-223-59-140.us-west-2.compute.amazonaws.com:files/
@@ -149,21 +158,21 @@ pmap(x -> plot_waveforms2(x), eachrow(events))
 paths = Array{String,1}(undef, 0)
 for (ind, row) in enumerate(eachrow(events))
 
-    path = join(["2019","$(row.julian)"],"_")
+    path = join([yr,lpad("$(row.julian)", 3,"0")],"_")
     push!(paths, path)
     files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
     ec2download(aws, "seisbasin", files, "~/")
 end
-@everywhere using HDF5
 locations = DataFrame(CSV.File("files/full_socal.csv"))
 
 @eval @everywhere locations = $locations
 # read files, split and write to h5
 @everywhere begin
     function get_event_data(row)
-        files = glob("continuous_waveforms/2019/2019_$(row.julian)/*")
-        startsplit, endsplit = row.datetime, row.datetime+Dates.Minute(10)
-        h5open("sample_events/$(row.julian).h5", "cw") do file
+        files = glob("continuous_waveforms/$yr/$(yr)_$(lpad(row.julian,3,"0"))/*")
+        println(files)
+        startsplit, endsplit = row.datetime-Dates.Minute(1), row.datetime+Dates.Minute(10)
+        h5open("sample_events/$(lpad(row.julian,3,"0")).h5", "cw") do file
             if !haskey(read(file), "meta")
                 write(file, "meta/date", "$(row.date)")
                 write(file, "meta/datetime", "$(row.datetime)")
@@ -180,18 +189,18 @@ locations = DataFrame(CSV.File("files/full_socal.csv"))
                     comp = string(f.id[1][end])
                     LLE_geo(f, locations) # add location 
                     dist = get_dist(f.loc[1], GeoLoc(lat=row.lat, lon=row.lon)) # get distance
-                    # if !haskey(read(file), "$station/meta") && !haskey(read(file), "$station/meta/dist")
-                    #     try
-                    #         # write metadata
-                    #         write(file, "$station/meta/dist", dist)
-                    #         write(file, "$station/meta/lat", f.loc[1].lat)
-                    #         write(file, "$station/meta/lon", f.loc[1].lon)
-                    #         write(file, "$station/meta/el", f.loc[1].el)
-                    #         write(file, "$station/meta/id", f.id[1])
-                    #     catch
-                    #         println("Failed in metadata")
-                    #     end
-                    # end
+                    if !haskey(read(file), "$station/meta") && !haskey(read(file), "$station/meta/dist")
+                        try
+                            # write metadata
+                            write(file, "$station/meta/dist", dist)
+                            write(file, "$station/meta/lat", f.loc[1].lat)
+                            write(file, "$station/meta/lon", f.loc[1].lon)
+                            write(file, "$station/meta/el", f.loc[1].el)
+                            write(file, "$station/meta/id", f.id[1])
+                        catch
+                            println("Failed in metadata")
+                        end
+                    end
                     if !haskey(read(file), "$station/$comp")
                         # write data
                         write(file, "$station/$comp", f.x[1])
@@ -208,13 +217,13 @@ if !isdir("sample_events")
     mkpath("sample_events")
 end
 
-T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
+T = @elapsed map(row -> get_event_data(row), eachrow(events))
 
 
 # upload to s3 
 event_files = glob("sample_events/*")
 
-pmap(x -> s3_put(aws, "seisbasin", x, read(x)), event_files)
+map(x -> s3_put(aws, "seisbasin", x, read(x), acl= "bucket_owner_full_access"), event_files)
 println("Done")
 
 

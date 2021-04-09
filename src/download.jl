@@ -77,6 +77,7 @@ function query_name(s::String, full::Bool)
     end
 end
 function get_dict_name(file::String)
+    """ Helper function for get_scedc_files"""
     station = convert(String, split(split(file,"/")[end],"_")[1])
     component = split(file,"/")[end][10:12]
     return string(station, "_", component)

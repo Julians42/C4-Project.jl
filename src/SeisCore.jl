@@ -8,4 +8,5 @@ using Base, Core, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, Distrib
 include("download.jl")
 include("process.jl")
 include("correlate.jl")
+include("big_correlate.jl")
 end

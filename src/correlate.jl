@@ -205,12 +205,16 @@ function LLE_geo(station, df)
 end
 function add_location(s::SeisData,df::DataFrame)
     """ Adds locations to SeisData object from a dataframe """
-    name = split(s.name[1],".")[2]
-    geo = LLE_geo(name, df)
-    if !isnothing(geo)
-        s.loc[1] = geo
-    else 
-        println("Station $name can't be found in the dataframe")
+    try
+        name = split(s.id[1],".")[2]
+        geo = LLE_geo(name, df)
+        if !isnothing(geo)
+            s.loc[1] = geo
+        else 
+            println("Station $name can't be found in the dataframe")
+        end
+    catch e
+        println(e)
     end
 end
 function rfft_raw(R::RawData,dims::Int=1)
