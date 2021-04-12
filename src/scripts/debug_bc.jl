@@ -260,12 +260,12 @@ end
         if !isdir(CORROUT)
             mkpath(CORROUT)
         end
-        filename = joinpath(CORROUT,"$(yr)_$(month)_$name.h5") # get output filename
+        filename = joinpath(CORROUT,"$(prefix)_$(yr)_$(month)_$name.h5") # get output filename
         # r = r"(?<=$(name)).*"
         components = ["EE","EN","EZ", "NE", "NN","NZ", "ZE", "ZN", "ZZ"]
     
         receivers = glob("$prefix/$name/*/*")
-        receivers = Set([join(split(x, ".")[end-2:end-1], ".") for x in receivers]) # just get reciever names
+        receivers = collect(Set([join(split(x, ".")[end-2:end-1], ".") for x in receivers])) # just get reciever names
         println(receivers)
         corr_list = glob("$prefix/$name*/*/*")
         C = load_corr(corr_list[1], convert(String, split(corr_list[1],"/")[end-1]))
@@ -324,13 +324,6 @@ end
         end
     end
 end
-
-arg = 0
-startdate = Date(2004)+Month(arg)
-enddate = startdate+Month(1)-Day(1)
-days = startdate:Day(1):enddate
-println("Processing download for: ", startdate, " to ",enddate)
-
 function correlate_big(dd::Date, startdate::Date = startdate)
     """ Computes autocorrelations for a specific day"""
     yr = Dates.year(dd)
@@ -413,7 +406,14 @@ function correlate_big(dd::Date, startdate::Date = startdate)
     rm("data/continuous_waveforms", recursive=true)
 end
 
-Tcbig = @elapsed map(dd -> correlate_big(dd, startdate), days[2:5])
+arg = 0
+startdate = Date(2004)+Month(arg)
+enddate = startdate+Month(1)-Day(1)
+days = startdate:Day(1):enddate
+println("Processing download for: ", startdate, " to ",enddate)
+
+Tstart = Dates.now()
+Tcbig = @elapsed map(dd -> correlate_big(dd, startdate), days[1:10])
 
 
 
@@ -422,15 +422,79 @@ autocorr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in g
 Sauto = @elapsed pmap(x -> stack_auto(x, startdate), autocorr_names)
 
 corr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_20HZ/*")]
-S20 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names)
+S20 = @elapsed pmap(x -> stack_corr(x, startdate, "CORR_20HZ"), corr_names)
 
 corr_names_lf = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_1HZ/*")]
-S1 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names_lf)
-println("Stacking Completed for autocorrs and interstation cross correlations in $(Sauto+S20+$S1) seconds")
+S1 = @elapsed pmap(x -> stack_corr(x, startdate, "CORR_1HZ"), corr_names_lf)
+println("Stacking Completed for autocorrs and interstation cross correlations in $(Sauto+S20+S1) seconds")
 
 # transfer to s3 
 autos = glob("autocorrelations/*/*")
 bigcorrs = glob("correlations/*/*")
 
-pmap(x -> s3_put(aws, "seisbasin", x, read(x)), autos)
-pmap(x -> s3_put(aws, "seisbasin", x, read(x)), bigcorrs)
+pmap(x -> s3_put(aws, "seisbasin", x, read(x), acl="bucket-owner-full-control"), autos)
+pmap(x -> s3_put(aws, "seisbasin", x, read(x), acl="bucket-owner-full-control"), bigcorrs)
+Tend = Dates.now()
+totalt = Tend-Tstart
+println("Finished in $totalt")
+
+# scp -i my_aws_key.pem ubuntu@ec2-34-221-181-73.us-west-2.compute.amazonaws.com:correlations/AZ.BZN/2004_January_AZ.BZN.h5 ~/Downloads/CORR_20HZ_2004_January_AZ.BZN.h5
+
+
+function preprocess2(file::String,  accelerometer::Bool=false, rootdir::String="", samp_rates::Array{Float64, 1}=[1., 20., 100.],
+    freqmin::Float64=freqmin, freqmax::Float64=freqmax, cc_step::Int64=cc_step, 
+    cc_len::Int64=cc_len, half_win::Int64=half_win, water_level::Float64=water_level, 
+    all_stations::DataFrame=all_stations, path::String=path)
+    """
+    Load raw seisdata file and process, saving to fft
+    """
+    try
+        data = SeisData()
+        if occursin(".ms", file)
+            read_data!(data, "mseed", file)
+        else # data is SeisIO native from NCEDC/IRIS
+            read_data!(data, "seisio", file)
+        end
+        gaps = size(data.t[1])[1] # N-2 gaps (eg gaps = 12 tests for 10 gaps)
+        pts = size(data.x[1])[1]
+        fs_temp = data.fs[1]
+        windows = u2d.(SeisIO.t_win(data.t[1], data.fs[1]) .* 1e-6)
+        startend = windows[:,2] .- windows[:,1] .> Second(cc_len)
+        if gaps < 25 && any(startend) # If few gaps and sufficient (2/3) data present, data is clean
+            try
+                add_location(data, all_stations)
+                for samp_rate in samp_rates
+                    S = SeisData()
+                    try
+                        S = process_raw(data, samp_rate)
+                    catch # trying to sample non 100Hz data at 100 Hz - skip resampling 
+                        S = process_raw(data, data.fs[1])
+                    end
+                    R = RawData(S,cc_len,cc_step)
+                    SeisNoise.detrend!(R)
+                    SeisNoise.taper!(R)
+                    bandpass!(R,freqmin,freqmax,zerophase=true)
+                    FFT = nothing
+                    if accelerometer # accelerometer - so we integrate
+                        FFT = rfft_raw(R,1)
+                    else # then its a seismometer
+                        FFT = compute_fft(R)
+                    end
+                    coherence!(FFT,half_win, water_level)
+                    try # save fft 
+                        root_fft = "ffts/$path/$(Int(samp_rate))/"
+                        save_fft(FFT, joinpath(rootdir, root_fft))
+                    catch e
+                        println(e)
+                    end
+                    #println("Successfully processed $(data.id[1])")
+                end
+                return data.id[1]
+            catch e
+                println(e)
+            end
+        end
+    catch e 
+        println(e)
+    end
+end

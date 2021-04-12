@@ -63,8 +63,8 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
                     end
                     R = RawData(S,cc_len,cc_step)
                     SeisNoise.detrend!(R)
-                    SeisNoise.taper!(R)
                     bandpass!(R,freqmin,freqmax,zerophase=true)
+                    SeisNoise.taper!(R)
                     FFT = nothing
                     if accelerometer # accelerometer - so we integrate
                         FFT = rfft_raw(R,1)
