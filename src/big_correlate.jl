@@ -238,18 +238,18 @@ function stack_corr(name::String, startdate::Date=startdate, prefix::String = "C
         end
     end
 end
-function stack_all()
-    autocorr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("AUTOCORR/*")]
+function stack_all(params::Dict=params)
+    autocorr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("AUTOCORR/*", params["rootdir"])]
     @eval @everywhere autocorr_names = $autocorr_names
-    Sauto = @elapsed pmap(x -> stack_auto(x, startdate), autocorr_names)
+    Sauto = @elapsed robust_pmap(x -> stack_auto(x, startdate), autocorr_names)
 
-    corr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_20HZ/*")]
+    corr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_20HZ/*", params["rootdir"])]
     @eval @everywhere corr_names = $corr_names
-    S20 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names)
+    S20 = @elapsed robust_pmap(x -> stack_corr(x, startdate), corr_names)
 
-    corr_names_lf = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_1HZ/*")]
+    corr_names_lf = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_1HZ/*", params["rootdir"])]
     @eval @everywhere corr_names_lf = $corr_names_lf
-    S1 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names_lf)
+    S1 = @elapsed robust_pmap(x -> stack_corr(x, startdate), corr_names_lf)
     println("Stacking Completed for autocorrs and interstation cross correlations in $(Sauto+S20+S1) seconds")
 end
 
@@ -300,9 +300,9 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
     broadbands = setdiff(allf, accelerometers) # get the rest of the files 
 
     @eval @everywhere accelerometers, broadbands = $accelerometers, $broadbands
-    T_b = @elapsed pmap(f -> preprocess2(f, false, params, path), broadbands)
+    T_b = @elapsed robust_pmap(f -> preprocess2(f, false, params, path), broadbands)
     if length(accelerometers) != 0 # save time on pmap allocation overhead
-        T_a = @elapsed pmap(f -> preprocess2(f, true, params, path), accelerometers) # integrate accelerometers
+        T_a = @elapsed robust_pmap(f -> preprocess2(f, true, params, path), accelerometers) # integrate accelerometers
         println("Preprocessing Completed in $(T_a+T_b) seconds.")
     else
         println("Preprocessing Completed in $T_b seconds.")
@@ -324,11 +324,11 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
 
     # correlate diagonal chunks
     @eval @everywhere chunks_20HZ = $chunks_20HZ
-    T20D = @elapsed pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_20HZ", true, params), chunks_20HZ)
+    T20D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_20HZ", true, params), chunks_20HZ)
 
     # correlate off-diagonal chunks
     @eval @everywhere off_chunk_names_20HZ = $ off_chunk_names_20HZ
-    T20O = @elapsed pmap(chunk -> offdiag_chunks(chunk, "CORR_20HZ", true, params), off_chunk_names_20HZ) # run mega correlations
+    T20O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "CORR_20HZ", true, params), off_chunk_names_20HZ) # run mega correlations
 
 
 
@@ -337,11 +337,11 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
 
     # correlate diagonal chunks
     @eval @everywhere chunks_1HZ = $chunks_1HZ
-    T1D = @elapsed pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_1HZ", false, params), chunks_1HZ)
+    T1D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_1HZ", false, params), chunks_1HZ)
 
     # correlate off-diagonal chunks
     @eval @everywhere off_chunk_names_1HZ = $off_chunk_names_1HZ
-    T1O = @elapsed pmap(chunk -> offdiag_chunks(chunk, "CORR_1HZ", false, params), off_chunk_names_1HZ) # run mega correlations
+    T1O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "CORR_1HZ", false, params), off_chunk_names_1HZ) # run mega correlations
 
     # Correlation summary
     println("All $(length(glob("CORR_*/*/*/$path*", "root"))) Inter-station Correlations computed in $(T20D+T20O + T1D + T1O) seconds")

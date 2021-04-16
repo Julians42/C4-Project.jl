@@ -1,5 +1,5 @@
 # Script for docker container to run correlations on AWS Batch
-using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, Distributed, JLD2, Glob, AWSS3, HDF5, Statistics, AbstractFFTs
+using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, Distributed, Parallelism, JLD2, Glob, AWSS3, HDF5, Statistics, AbstractFFTs
 
 
 addprocs()
@@ -10,7 +10,7 @@ addprocs()
 @everywhere begin 
     using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, JLD2, Glob, AWSS3, HDF5, Statistics, AbstractFFTs
     aws = AWS.AWSConfig(region="us-west-2")
-    rootdir = ""
+    rootdir = "/root"
     network = "CI"
     channel1 = "BH?"
     channel2 = "HH?"
