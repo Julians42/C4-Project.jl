@@ -321,3 +321,10 @@ function preprocess3(file::String,  accelerometer::Bool=false, rootdir::String="
         println(e)
     end
 end
+
+t = Template(;
+    user = "Julians42",
+    license = "MIT",
+    authors = ["Julian Schmitt"],
+    )
+

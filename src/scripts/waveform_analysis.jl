@@ -1,19 +1,21 @@
-using Pkg, ColorSchemes, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, Distributed, AWSS3, Glob, HDF5,
-        Statistics, JLD2, Plots
+using Pkg, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, Distributed, AWSS3, Glob, HDF5, Statistics
 
 ENV["GR"] = ""
 Pkg.build("GR")
 
 # ColorScheme
-σs = 0.5:0.1:2
-normal_x = -5:0.01:5
-normal_y = [exp.(-normal_x.^2 / (2σ^2)) / (2π * σ^2) for σ in σs];
-loadcolorscheme(:cm_maxamp,ColorSchemes.gist_heat.colors[end-30:-1:1], "maxamp color", "for waveform plot");
+# σs = 0.5:0.1:2
+# normal_x = -5:0.01:5
+# normal_y = [exp.(-normal_x.^2 / (2σ^2)) / (2π * σ^2) for σ in σs];
+# loadcolorscheme(:cm_maxamp,ColorSchemes.gist_heat.colors[end-30:-1:1], "maxamp color", "for waveform plot");
 
 addprocs()
+@everywhere begin
+    using Pkg; Pkg.activate("ubuntu")
+    using AWS, AWSS3, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, Glob, HDF5
+end
 @everywhere begin 
-    using AWSCore, AWSS3, ColorSchemes, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWSCore, AWSS3, Glob, Plots, HDF5
-    aws = aws_config(region="us-west-2")
+    aws = AWS.AWSConfig(region="us-west-2")
 end
 @everywhere begin 
     function plot_waveforms2(row)
@@ -109,18 +111,24 @@ rootdir=""
 # println(dates)
 # events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = magnitudes, julian = julian)
 
-
-dates = [Date(2017, 2,10)]
-dt = [DateTime(2017, 2,10, 10,10,32)]
-magnitudes = [3.4]
-lat = [34.131]
-lon = [-117.046]
-julian = [convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(2017))))+1 for dt2 in dt]
+# dates = [Date(2017, 2,10)]
+# dt = [DateTime(2017, 2,10, 10,10,32)]
+# magnitudes = [3.4]
+# lat = [34.131]
+# lon = [-117.046]
+dates = [Date(2017, 2, 24), Date(2018, 8, 19), Date(2019, 5, 26), Date(2019, 12, 15)]
+dt = [DateTime(2017, 2,24, 17, 38, 44), DateTime(2018, 8, 19, 0, 19, 40), DateTime(2019, 5, 26, 7,41,15), 
+        DateTime(2019, 12, 15, 6, 11, 51)]
+#julian = [join([Dates.year(dt2),lpad(convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(Dates.year(dt2))))+1], "_"), 3, "0") for dt2 in dt]
+julian = ["2017_055", "2018_231","2019_146", "2019_349"]
 println(dates)
+lat = [-23.259, -18.133,-5.812, 6.697]
+lon = [-178.804, -178.153, -75.270, 125.174]
+magnitudes = [6.9, 8.2, 8.0, 6.8]
 events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = magnitudes, julian = julian)
 # download data
-yr = "2017"
-@eval @everywhere locations = $locations
+# yr = "2017"
+# @eval @everywhere locations = $locations
 @eval @everywhere events = $events
 
 
@@ -157,22 +165,34 @@ yr = "2017"
 # download data 
 paths = Array{String,1}(undef, 0)
 for (ind, row) in enumerate(eachrow(events))
-
-    path = join([yr,lpad("$(row.julian)", 3,"0")],"_")
-    push!(paths, path)
-    files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
-    ec2download(aws, "seisbasin", files, "~/")
+    try
+        #path = join([yr,lpad("$(row.julian)", 3,"0")],"_")
+        yr = split(row.julian, "_")[1]
+        path = row.julian 
+        println(path)
+        push!(paths, path)
+        node_path  = S3Path("s3://seisbasin/continuous_waveforms/$yr/$path/", config=aws)
+        files = joinpath.("continuous_waveforms/$yr/$path/", 
+                            convert.(String, readdir(node_path)))
+        #files = [elt["Key"] for elt in collect(s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/", max_items=1000))]
+        println(files)
+        #files = [convert(String, elt) for elt in files]
+        ec2download(aws, "seisbasin", files, "~/")
+    catch e
+        println(e)
+    end
 end
-locations = DataFrame(CSV.File("files/full_socal.csv"))
+locations = DataFrame(CSV.File("files/updated_sources.csv"))
 
 @eval @everywhere locations = $locations
 # read files, split and write to h5
 @everywhere begin
     function get_event_data(row)
-        files = glob("continuous_waveforms/$yr/$(yr)_$(lpad(row.julian,3,"0"))/*")
+        yr = split(row.julian, "_")[1]
+        files = glob("continuous_waveforms/$yr/$(row.julian)/*")
         println(files)
-        startsplit, endsplit = row.datetime-Dates.Minute(1), row.datetime+Dates.Minute(10)
-        h5open("sample_events/$(lpad(row.julian,3,"0")).h5", "cw") do file
+        startsplit, endsplit = row.datetime, row.datetime+Dates.Minute(180)
+        h5open("sample_events/$(row.julian).h5", "cw") do file
             if !haskey(read(file), "meta")
                 write(file, "meta/date", "$(row.date)")
                 write(file, "meta/datetime", "$(row.datetime)")
@@ -189,18 +209,18 @@ locations = DataFrame(CSV.File("files/full_socal.csv"))
                     comp = string(f.id[1][end])
                     LLE_geo(f, locations) # add location 
                     dist = get_dist(f.loc[1], GeoLoc(lat=row.lat, lon=row.lon)) # get distance
-                    if !haskey(read(file), "$station/meta") && !haskey(read(file), "$station/meta/dist")
-                        try
-                            # write metadata
-                            write(file, "$station/meta/dist", dist)
-                            write(file, "$station/meta/lat", f.loc[1].lat)
-                            write(file, "$station/meta/lon", f.loc[1].lon)
-                            write(file, "$station/meta/el", f.loc[1].el)
-                            write(file, "$station/meta/id", f.id[1])
-                        catch
-                            println("Failed in metadata")
-                        end
+                    #if !haskey(read(file), "$station/meta") && !haskey(read(file), "$station/meta/dist")
+                    try
+                        # write metadata
+                        write(file, "$station/meta/dist", dist)
+                        write(file, "$station/meta/lat", f.loc[1].lat)
+                        write(file, "$station/meta/lon", f.loc[1].lon)
+                        write(file, "$station/meta/el", f.loc[1].el)
+                        write(file, "$station/meta/id", f.id[1])
+                    catch
+                        println("Failed in metadata")
                     end
+                    #end
                     if !haskey(read(file), "$station/$comp")
                         # write data
                         write(file, "$station/$comp", f.x[1])
@@ -217,7 +237,7 @@ if !isdir("sample_events")
     mkpath("sample_events")
 end
 
-T = @elapsed map(row -> get_event_data(row), eachrow(events))
+T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
 
 
 # upload to s3 

@@ -1,6 +1,6 @@
 # Functions for large C4 correlation job 
 export correlate_pair, autocorrelate, diag_chunks, offdiag_chunks, preprocess2, get_blocks,
-        stack_auto, stack_corr, correlate_big, stack_all
+        stack_auto, stack_corr, correlate_big, stack_all, print_thing
 
 
 # correlation helper functions
@@ -38,9 +38,9 @@ function offdiag_chunks(chunkpair::Array{Array{String, 1}}, prefix::String = "CO
     if filt_dist; filter!(x -> get_dist(sources[x[1]].loc, receivers[x[2]].loc) <= 300., pairs); end # filt distances
     map(pair -> correlate_pair(sources[pair[1]], receivers[pair[2]], prefix, params), pairs)
 end
-function get_blocks(paths::Array{String,1})
+function get_blocks(paths::Array{String,1}, params::Dict=params)
     # Chunk raw ffts into blocks. 30 is best size for IO, but distribute across cores if more cores available
-    chunks = collect(Iterators.partition(paths, convert(Int64, minimum([30, ceil(length(paths)/nprocs())])))) 
+    chunks = collect(Iterators.partition(paths, 30))#convert(Int64, minimum([30, ceil(length(paths)/params["num_procs"])]))))
     off_chunks = vec([collect(x) for x in Iterators.product(1:length(chunks),1:length(chunks))])
     filter!(chunk_pair -> chunk_pair[1] < chunk_pair[2], off_chunks)
     # map chunk indices to filenames
@@ -49,7 +49,7 @@ function get_blocks(paths::Array{String,1})
 end
 
 # preprocessing
-function preprocess2(file::String, accelerometer::Bool=false, params::Dict=params)
+function preprocess2(file::String, accelerometer::Bool=false, params::Dict=params, path::String=path)
     """
     Load raw seisdata file and process, saving to fft
     """
@@ -72,12 +72,14 @@ function preprocess2(file::String, accelerometer::Bool=false, params::Dict=param
                     S = SeisData()
                     try
                         S = process_raw(data, samp_rate)
-                    catch # trying to sample non 100Hz data at 100 Hz - skip resampling 
+                    catch e# trying to sample non 100Hz data at 100 Hz - skip resampling 
+                        println(e)
                         S = process_raw(data, data.fs[1])
                     end
                     R = RawData(S,params["cc_len"],params["cc_step"])
                     SeisNoise.detrend!(R)
                     bandpass!(R,params["freqmin"],params["freqmax"],zerophase=true)
+                    # SMOOTHING LINE GOES HERE
                     SeisNoise.taper!(R)
                     FFT = nothing
                     if accelerometer # accelerometer - so we integrate
@@ -94,7 +96,7 @@ function preprocess2(file::String, accelerometer::Bool=false, params::Dict=param
                     end
                     #println("Successfully processed $(data.id[1])")
                 end
-                return data.id[1]
+                return data.id
             catch e
                 println(e)
             end
@@ -117,8 +119,10 @@ function stack_auto(name::String, startdate::Date=startdate)
     filename = joinpath(CORROUT,"$(yr)_$(month)_$name.h5") # get output filename
 
     # Get list of files to save
-    autocorr_list = glob("AUTOCORR/$name*/*/*")
-    C = load_corr(autocorr_list[1], convert(String, split(autocorr_list[1],"/")[end-1]))
+    autocorr_list = glob("AUTOCORR/$name*/*/*.jld2")
+    components = ["EE", "EN", "EZ", "NE", "NN", "NZ", "ZE", "ZN", "ZZ"]
+
+    C = load_corr(autocorr_list[1], convert(String, split(autocorr_list[1],"/")[end-1])) # sample autocorr for meta
     h5open(filename, "cw") do file 
         if !haskey(read(file), "meta")
             write(file, "meta/corr_type", C.corr_type)
@@ -137,13 +141,29 @@ function stack_auto(name::String, startdate::Date=startdate)
             write(file, "meta/az", C.loc.az)
             write(file, "meta/inc", C.loc.inc)
         end
-        for (ind, name) in enumerate(autocorr_list)
-            # load file 
-            comp = string(split(name, "/")[end-1]) # get component
-            Cl = load_corr(name, comp)
-            # write 
-            write(file, "$comp/$(Cl.id)", Cl.corr[:])
+        # stack per month 
+        for comp in components
+            #comp_files = filter(f -> convert(String, split(f, "/")[end-1]) == comp, autocorr_list)
+            comp_files = glob("AUTOCORR/$name*/$comp/*.jld2") # uni-component files
+            autocorrs = [load_corr(f, comp) for f in comp_files]
+
+            autocorr_mean = SeisNoise.stack(sum(autocorrs), allstack=true, stacktype=mean)
+            autocorr_pws = SeisNoise.stack(sum(autocorrs), allstack=true, stacktype=pws)
+            autocorr_robust = SeisNoise.stack(sum(autocorrs), allstack=true, stacktype=robuststack)
+            # save into file 
+            write(file, "$rec/$comp/linear", autocorr_mean.corr[:])
+            write(file, "$rec/$comp/pws", autocorr_pws.corr[:])
+            write(file, "$rec/$comp/robust", autocorr_robust.corr[:])
         end
+
+        # Following code saves each correlation individually
+        # for (ind, name) in enumerate(autocorr_list)
+        #     # load file 
+        #     comp = string(split(name, "/")[end-1]) # get component
+        #     Cl = load_corr(name, comp)
+        #     # write 
+        #     write(file, "$comp/$(Cl.id)", Cl.corr[:])
+        # end
     end
 end
 function stack_corr(name::String, startdate::Date=startdate, prefix::String = "CORR_20HZ")
@@ -189,7 +209,7 @@ function stack_corr(name::String, startdate::Date=startdate, prefix::String = "C
                 # Cr = load_corr(sample_r, "ZZ")
                 rec_station = split(rec, ".")[2]
                 #rec_loc = LLE_geo(rec_station, all_stations)
-                rec_loc = load_fft(glob("ffts/*/*/$rec*BHZ*")[1], "BHZ").loc
+                rec_loc = load_fft(glob("ffts/*/*/$rec*BHZ*")[1], "BHZ").loc # get location from fft - perhaps a faster way to do this. 
                 if !haskey(read(file), "$rec/meta")
                     write(file, "$rec/meta/lon", rec_loc.lon)
                     write(file, "$rec/meta/lat", rec_loc.lat)
@@ -220,12 +240,15 @@ function stack_corr(name::String, startdate::Date=startdate, prefix::String = "C
 end
 function stack_all()
     autocorr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("AUTOCORR/*")]
+    @eval @everywhere autocorr_names = $autocorr_names
     Sauto = @elapsed pmap(x -> stack_auto(x, startdate), autocorr_names)
 
     corr_names = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_20HZ/*")]
+    @eval @everywhere corr_names = $corr_names
     S20 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names)
 
     corr_names_lf = [join(split(split(auto, "/")[end], ".")[1:2],".") for auto in glob("CORR_1HZ/*")]
+    @eval @everywhere corr_names_lf = $corr_names_lf
     S1 = @elapsed pmap(x -> stack_corr(x, startdate), corr_names_lf)
     println("Stacking Completed for autocorrs and interstation cross correlations in $(Sauto+S20+S1) seconds")
 end
@@ -241,14 +264,15 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
     ###### WRAP THIS MESS #######
     # get filepaths for source stations - would be faster if they're available
     scedc_files = nothing
-    if !isdir("scedc_path/$yr/"); mkpath("scedc_path/$yr/"); end
+    if !isdir("root/scedc_path/$yr/"); mkpath("root/scedc_path/$yr/"); end
     try # most filelists are stored on seisbasin
-        s3_get_file(aws, "seisbasin", "scedc_path/$yr/$path.csv", "scedc_path/$yr/$path.csv")
-        scedc_files = DataFrame(CSV.File("scedc_path/$yr/$path.csv")).Path
+        s3_get_file(aws, "seisbasin", "scedc_path/$yr/$path.csv", "root/scedc_path/$yr/$path.csv")
+        scedc_files = DataFrame(CSV.File("root/scedc_path/$yr/$path.csv")).Path
     catch e # in case file not found/present we use SCEDC lookup
         println(e)
         scedc_files = get_scedc_files(dd, aws)
     end
+    println(length(scedc_files), " is the length of scedc_files")
     #########################
 
     # filepaths for iris, ncedc, and node data
@@ -259,58 +283,71 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
                                         convert.(String, readdir(node_path))
     filelist_basin = vcat(joinpath.("iris_waveforms/$yr/$path/", iris_query), joinpath.("ncedc_waveforms/$yr/$path/", ncedc_query),
                                         joinpath.("continuous_waveforms/$yr/$path/", node_query))
-    println("There are $(length(filelist_basin)) node files and $(length(scedc_files)) SCEDC filesavailable for $path.")
+    println("There are $(length(filelist_basin)) node files and $(length(scedc_files)) SCEDC files available for $path.")
 
     # download scedc and seisbasin data
-    ec2download(aws, "scedc-pds", scedc_files, "~/data")
-    ec2download(aws, "seisbasin", filelist_basin, "~/data")
+    ec2download(aws, "scedc-pds", scedc_files, "/root/data")
+    ec2download(aws, "seisbasin", filelist_basin, "/root/data")
     println("Download complete!")
 
 
     # preprocess - broadbands and seismometers are processed separately
-    allf = glob("data/*/$yr/$path/*")
-    accelerometers = filter(x -> isfile(x), joinpath.("data/continuous_waveforms/$yr/$path/", node_query))
+    allf = glob("data/*/$yr/$path/*", "root")
+    println(allf)
+    println(readdir())
+    println(readdir("root/data"))
+    accelerometers = filter(x -> isfile(x), joinpath.("/root/data/continuous_waveforms/$yr/$path/", node_query))
     broadbands = setdiff(allf, accelerometers) # get the rest of the files 
 
-    T_b = @elapsed pmap(f -> preprocess2(f, false, params), broadbands)
+    @eval @everywhere accelerometers, broadbands = $accelerometers, $broadbands
+    T_b = @elapsed pmap(f -> preprocess2(f, false, params, path), broadbands)
     if length(accelerometers) != 0 # save time on pmap allocation overhead
-        T_a = @elapsed pmap(f -> preprocess2(f, true, params), accelerometers) # integrate accelerometers
+        T_a = @elapsed pmap(f -> preprocess2(f, true, params, path), accelerometers) # integrate accelerometers
         println("Preprocessing Completed in $(T_a+T_b) seconds.")
     else
         println("Preprocessing Completed in $T_b seconds.")
     end
 
     # autocorrelations    
-    fft_list_100 = glob("ffts/$path/100/*.jld2")
+    fft_list_100 = glob("ffts/$path/100/*.jld2", "root")
+    println("FFT list 100 is $(length(fft_list_100)) stations long")
     fft_100_stations = unique([join(split(elt, ".")[1:2],".") for elt in fft_list_100]) # get stations to iterate over
+    @eval @everywhere fft_100_stations = $fft_100_stations
     pmap(x -> autocorrelate(x, fft_list_100, params), fft_100_stations)
 
 
-    fft_paths_20 = sort(glob("ffts/$path/20/*")) # alphabetic sort for all stations so that diagonal files are made correctly
-    fft_paths_1 = sort(glob("ffts/$path/1/*")) # alphabetic sort for all stations so that diagonal files are made correctly
-
+    fft_paths_20 = sort(glob("ffts/$path/20/*", "root")) # alphabetic sort for all stations so that diagonal files are made correctly
+    fft_paths_1 = sort(glob("ffts/$path/1/*", "root")) # alphabetic sort for all stations so that diagonal files are made correctly
+    println("There are $(length(fft_paths_20)) fft datas for the 20 HZ correlations")
     # run 20 HZ correlations
-    chunks_20HZ, off_chunk_names_20HZ = get_blocks(fft_paths_20);
+    chunks_20HZ, off_chunk_names_20HZ = get_blocks(fft_paths_20, params);
 
     # correlate diagonal chunks
+    @eval @everywhere chunks_20HZ = $chunks_20HZ
     T20D = @elapsed pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_20HZ", true, params), chunks_20HZ)
 
     # correlate off-diagonal chunks
+    @eval @everywhere off_chunk_names_20HZ = $ off_chunk_names_20HZ
     T20O = @elapsed pmap(chunk -> offdiag_chunks(chunk, "CORR_20HZ", true, params), off_chunk_names_20HZ) # run mega correlations
 
 
 
     # run low freq correlations 
-    chunks_1HZ, off_chunk_names_1HZ = get_blocks(fft_paths_1);
+    chunks_1HZ, off_chunk_names_1HZ = get_blocks(fft_paths_1, params);
 
     # correlate diagonal chunks
+    @eval @everywhere chunks_1HZ = $chunks_1HZ
     T1D = @elapsed pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_1HZ", false, params), chunks_1HZ)
 
     # correlate off-diagonal chunks
+    @eval @everywhere off_chunk_names_1HZ = $off_chunk_names_1HZ
     T1O = @elapsed pmap(chunk -> offdiag_chunks(chunk, "CORR_1HZ", false, params), off_chunk_names_1HZ) # run mega correlations
 
     # Correlation summary
-    println("All $(length(glob("CORR_*/*/*/$path*"))) Inter-station Correlations computed in $(T20D+T20O + T1D + T1O) seconds")
-    rm("data/continuous_waveforms", recursive=true)
+    println("All $(length(glob("CORR_*/*/*/$path*", "root"))) Inter-station Correlations computed in $(T20D+T20O + T1D + T1O) seconds")
+    try; rm("root/data/continuous_waveforms/", recursive=true); catch e; println(e); end
 end
 
+function print_thing(f)
+    println(f)
+end
