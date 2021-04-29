@@ -1,6 +1,6 @@
 # Functions for large C4 correlation job 
 export correlate_pair, autocorrelate, diag_chunks, offdiag_chunks, preprocess2, get_blocks,
-        stack_auto, stack_corr, correlate_big, stack_all, print_thing
+        stack_auto, stack_corr, correlate_big, stack_all
 
 
 # correlation helper functions
@@ -20,7 +20,7 @@ function autocorrelate(station::String, list::Array{String,1}=fft_list_100, para
     channels = filter(x -> occursin(station, x), list)
     ffts = map(x -> load_fft(x, string(x[end-7:end-5])), channels)
     pairs = vec([collect(x) for x in Iterators.product(1:length(ffts),1:length(ffts))])
-    map(pair -> correlate_pair(ffts[pair[1]], ffts[pair[2]], "AUTOCORR", params), pairs)
+    map(pair -> correlate_pair(ffts[pair[1]], ffts[pair[2]], "root/AUTOCORR", params), pairs)
 end
 function diag_chunks(chunk::Array{String,1}, prefix::String = "CORR", filt_dist::Bool = true, params::Dict=params)
     ffts  = map(x -> load_fft(x, string(x[end-7:end-5])), chunk)
@@ -112,7 +112,7 @@ function stack_auto(name::String, startdate::Date=startdate)
     yr = Dates.year(startdate)
     # stack autocorrelations 
 
-    CORROUT = expanduser("autocorrelations/$name/")
+    CORROUT = expanduser(joinpath(params["rootdir"],"autocorrelations/$name/"))
     if !isdir(CORROUT)
         mkpath(CORROUT)
     end
@@ -171,7 +171,7 @@ function stack_corr(name::String, startdate::Date=startdate, prefix::String = "C
     yr = Dates.year(startdate)
     # stack autocorrelations 
 
-    CORROUT = expanduser("correlations/$name/")
+    CORROUT = expanduser(joinpath(params["rootdir"], "correlations/$name/"))
     if !isdir(CORROUT)
         mkpath(CORROUT)
     end
@@ -324,11 +324,11 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
 
     # correlate diagonal chunks
     @eval @everywhere chunks_20HZ = $chunks_20HZ
-    T20D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_20HZ", true, params), chunks_20HZ)
+    T20D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "root/CORR_20HZ", true, params), chunks_20HZ)
 
     # correlate off-diagonal chunks
     @eval @everywhere off_chunk_names_20HZ = $ off_chunk_names_20HZ
-    T20O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "CORR_20HZ", true, params), off_chunk_names_20HZ) # run mega correlations
+    T20O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "root/CORR_20HZ", true, params), off_chunk_names_20HZ) # run mega correlations
 
 
 
@@ -337,17 +337,13 @@ function correlate_big(dd::Date, startdate::Date = startdate, params::Dict = par
 
     # correlate diagonal chunks
     @eval @everywhere chunks_1HZ = $chunks_1HZ
-    T1D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "CORR_1HZ", false, params), chunks_1HZ)
+    T1D = @elapsed robust_pmap(chunk -> diag_chunks(convert(Array,chunk), "root/CORR_1HZ", false, params), chunks_1HZ)
 
     # correlate off-diagonal chunks
     @eval @everywhere off_chunk_names_1HZ = $off_chunk_names_1HZ
-    T1O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "CORR_1HZ", false, params), off_chunk_names_1HZ) # run mega correlations
+    T1O = @elapsed robust_pmap(chunk -> offdiag_chunks(chunk, "root/CORR_1HZ", false, params), off_chunk_names_1HZ) # run mega correlations
 
     # Correlation summary
     println("All $(length(glob("CORR_*/*/*/$path*", "root"))) Inter-station Correlations computed in $(T20D+T20O + T1D + T1O) seconds")
     try; rm("root/data/continuous_waveforms/", recursive=true); catch e; println(e); end
-end
-
-function print_thing(f)
-    println(f)
 end

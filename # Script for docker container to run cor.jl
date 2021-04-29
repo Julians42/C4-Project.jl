@@ -7,7 +7,7 @@ addprocs()
 @everywhere begin 
     using SeisCore, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, AWS, JLD2, Glob, AWSS3, HDF5, Statistics, AbstractFFTs
     aws = AWS.AWSConfig(region="us-west-2")
-    rootdir = "/scratch" # for docker ecs image we have added 750 GB to docker scratch container
+    rootdir = "" # for docker ecs image we have added 750 GB to docker scratch container: "/scratch"
     network = "CI"
     channel1 = "BH?"
     channel2 = "HH?"
@@ -19,7 +19,7 @@ addprocs()
     half_win, water_level = 30, 0.01
     samp_rates = [1., 20., 100.] # for processing
     #all_stations = DataFrame(CSV.File("/home/ubuntu/SeisCore.jl/docs/updated_sources.csv"))
-    all_stations = DataFrame(CSV.File("/root/CAstations.csv"))
+    all_stations = DataFrame(CSV.File("files/CAstations.csv"))
     params = Dict("aws" => aws, "cc_step" => cc_step, "cc_len" => cc_len, "maxlag" => maxlag,
             "fs" => fs, "half_win" => half_win, "water_level" => water_level, 
             "all_stations" => all_stations, "samp_rates" => samp_rates, "rootdir" => rootdir,
@@ -27,7 +27,7 @@ addprocs()
 end
 
 
-arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"]
+arg = ARGS[1]
 startdate = Date(2004)+Month(arg)
 enddate = startdate+Month(1)-Day(1)
 days = startdate:Day(1):enddate

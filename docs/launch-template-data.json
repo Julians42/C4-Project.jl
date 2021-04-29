@@ -1,15 +1,14 @@
 {
-    "LaunchTemplateName": "decrease-volume",
+    "LaunchTemplateName": "increase-volume300",
     "LaunchTemplateData": {
         "BlockDeviceMappings": [
             {
                 "DeviceName": "/dev/xvda",
                 "Ebs": {
-                    "VolumeSize": 8,
-                    "VolumeType": "st1"
+                    "VolumeSize": 300, 
+                    "VolumeType": "st1" 
                 }
             }
         ]
     }
 }
-

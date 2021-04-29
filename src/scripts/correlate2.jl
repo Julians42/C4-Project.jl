@@ -71,7 +71,7 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
                     else # then its a seismometer
                         FFT = compute_fft(R)
                     end
-                    coherence!(FFT,half_win, water_level)
+                    coherence!(FFT,half_win, water_level) # try no coherence ??
                     try # save fft 
                         root_fft = joinpath(rootdir, "ffts/$path/")
                         save_fft(FFT, root_fft)
@@ -130,11 +130,12 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
             for receiver in receivers
                 try
                     C = correlate(source,receiver,maxlag)
-                    cc_medianmute!(C, 10.) # remove correlation windows with high noise
+                    cc_medianmute!(C, 10.) # remove correlation windows with high noise # try run with medianmute - robust stack on daily
                     stack!(C)
                     pair, comp = name_corr(C), C.comp
                     save_named_corr(C,"CORR/$pair/$comp")
                 catch e
+                    # add counter - iterate num bad; print
                     println(e)
                 end
             end

@@ -192,26 +192,35 @@ function correlate_block(src::Array{String,1}, rec::Array{String,1}, maxlag::Flo
 end
 
 # helper functions - simplify larger coding blocks above 
-function LLE_geo(station, df)
+function LLE_geo(network, station, df)
     """ Find station matching location and return geoloc object"""
     try
-        row = df[(findfirst(x -> x==station, df.station)),:]
-        lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+        row = df[findfirst(x -> x.Station==station && x.Network==network, eachrow(df)),:]
+        lat, lon, el = row.Latitude[1], row.Longitude[1], row.Elevation[1]
         geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
         return geo
     catch 
-        return nothing
+        try # try lowercase csv format (older csvs)
+            row = df[findfirst(x -> x.station==station && x.network==network, eachrow(df)),:]
+            lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+            geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+            return geo
+        catch
+            return nothing
+        end
     end
 end
 function add_location(s::SeisData,df::DataFrame)
     """ Adds locations to SeisData object from a dataframe """
     try
-        name = split(s.id[1],".")[2]
-        geo = LLE_geo(name, df)
+        network = split(s.id[1], ".")[1]
+        station = split(s.id[1],".")[2]
+        println(network, "  ", station)
+        geo = LLE_geo(network, station, df)
         if !isnothing(geo)
             s.loc[1] = geo
         else 
-            println("Station $name can't be found in the dataframe")
+            println("Station $network.$station can't be found in the dataframe")
         end
     catch e
         println(e)
