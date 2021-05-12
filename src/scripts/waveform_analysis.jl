@@ -11,7 +11,7 @@ Pkg.build("GR")
 
 addprocs()
 @everywhere begin
-    using Pkg; Pkg.activate("ubuntu")
+    #using Pkg; Pkg.activate("ubuntu")
     using AWS, AWSS3, SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, Glob, HDF5
 end
 @everywhere begin 
@@ -78,15 +78,35 @@ end
         end
     end
     function LLE_geo(s::SeisData, df)
-        """ Add location to SeisData object from dataframe"""
+        """ Find station matching location and return geoloc object"""
         network, station = split(s.id[1], ".")[1], split(s.id[1],".")[2]
         try
-            row = filter(row -> (row.network==network) & (row.station==station), df)[1,:]
-            s.loc[1] = GeoLoc(lat = float(row.latitude), lon = float(row.longitude), el = float(row.elevation))
-        catch 
-            return nothing # when station is not found in dataframe
+            row = df[findfirst(x -> x.Station==station && x.Network==network, eachrow(df)),:]
+            lat, lon, el = row.Latitude[1], row.Longitude[1], row.Elevation[1]
+            geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+            s.loc[1] = geo
+        catch e
+            println(e)
+            try # try lowercase csv format (older csvs)
+                row = df[findfirst(x -> x.station==station && x.network==network, eachrow(df)),:]
+                lat, lon, el = row.latitude[1], row.longitude[1], row.elevation[1]
+                geo = GeoLoc(lat = float(lat), lon = float(lon), el = float(el))
+                s.loc[1]=geo
+            catch
+                return nothing
+            end
         end
     end
+    # function LLE_geo(s::SeisData, df)
+    #     """ Add location to SeisData object from dataframe"""
+    #     network, station = split(s.id[1], ".")[1], split(s.id[1],".")[2]
+    #     try
+    #         row = filter(row -> (row.network==network) & (row.station==station), df)[1,:]
+    #         s.loc[1] = GeoLoc(lat = float(row.latitude), lon = float(row.longitude), el = float(row.elevation))
+    #     catch 
+    #         return nothing # when station is not found in dataframe
+    #     end
+    # end
     function tsplit(S::SeisData, s::DateTime, t::DateTime)
         LLE_geo(S, locations)
         sync!(S, s=s, t=t)
@@ -116,15 +136,21 @@ rootdir=""
 # magnitudes = [3.4]
 # lat = [34.131]
 # lon = [-117.046]
-dates = [Date(2017, 2, 24), Date(2018, 8, 19), Date(2019, 5, 26), Date(2019, 12, 15)]
-dt = [DateTime(2017, 2,24, 17, 38, 44), DateTime(2018, 8, 19, 0, 19, 40), DateTime(2019, 5, 26, 7,41,15), 
-        DateTime(2019, 12, 15, 6, 11, 51)]
-#julian = [join([Dates.year(dt2),lpad(convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(Dates.year(dt2))))+1], "_"), 3, "0") for dt2 in dt]
-julian = ["2017_055", "2018_231","2019_146", "2019_349"]
-println(dates)
-lat = [-23.259, -18.133,-5.812, 6.697]
-lon = [-178.804, -178.153, -75.270, 125.174]
-magnitudes = [6.9, 8.2, 8.0, 6.8]
+# dates = [Date(2017, 2, 24), Date(2018, 8, 19), Date(2019, 5, 26), Date(2019, 12, 15)]
+# dt = [DateTime(2017, 2,24, 17, 38, 44), DateTime(2018, 8, 19, 0, 19, 40), DateTime(2019, 5, 26, 7,41,15), 
+#         DateTime(2019, 12, 15, 6, 11, 51)]
+# #julian = [join([Dates.year(dt2),lpad(convert(Int64, floor(datetime2julian(dt2)-datetime2julian(DateTime(Dates.year(dt2))))+1], "_"), 3, "0") for dt2 in dt]
+# julian = ["2017_055", "2018_231","2019_146", "2019_349"]
+# println(dates)
+# lat = [-23.259, -18.133,-5.812, 6.697]
+# lon = [-178.804, -178.153, -75.270, 125.174]
+# magnitudes = [6.9, 8.2, 8.0, 6.8]
+dates  = [Date(2019, 11, 20), Date(2019, 11, 24)]
+dt = [DateTime(2019, 11, 20, 4, 27, 5), DateTime(2019, 11, 24, 0, 54, 1)]
+magnitudes = [6.3, 6.3]
+lat = [13.886, 51.381]
+lon = [-93.207, 175.512]
+julian = ["2019_324", "2019_328"]
 events = DataFrame(date = dates, datetime = dt, lat=lat, lon = lon, magnitude = magnitudes, julian = julian)
 # download data
 # yr = "2017"
@@ -182,7 +208,7 @@ for (ind, row) in enumerate(eachrow(events))
         println(e)
     end
 end
-locations = DataFrame(CSV.File("files/updated_sources.csv"))
+locations = DataFrame(CSV.File("files/CAstations.csv"))
 
 @eval @everywhere locations = $locations
 # read files, split and write to h5
@@ -243,7 +269,7 @@ T = @elapsed pmap(row -> get_event_data(row), eachrow(events))
 # upload to s3 
 event_files = glob("sample_events/*")
 
-map(x -> s3_put(aws, "seisbasin", x, read(x), acl= "bucket_owner_full_access"), event_files)
+map(x -> s3_put(aws, "seisbasin", x, read(x), acl= "bucket_owner_full_control"), event_files)
 println("Done")
 
 

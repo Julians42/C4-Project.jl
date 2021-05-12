@@ -1,5 +1,4 @@
-T = @elapsed using SeisIO, SeisNoise, Dates, CSV, DataFrames, SCEDC, 
-            AWSCore, Distributed, JLD2, Statistics, PyCall, Glob, StructArrays, AWSS3, AbstractFFTs, HDF5
+T = @elapsed using Distributed, PyCall
 
 #Add procs to access multiple cores
 addprocs()
@@ -237,18 +236,31 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
                         write(file, "$rec/meta/baz", get_baz(source_loc, rec_loc))
                     end
                     for comp in components
-                        # load correlations for this receiver by component 
-                        files = glob("CORR/$tf*$rec*/$comp/*")
-                        corrs = [load_corr(f, comp) for f in files]
-        
-                        # implement various stacktypes
-                        corr_mean = SeisNoise.stack(sum(corrs), allstack=true, stacktype=mean)
-                        corr_pws = SeisNoise.stack(sum(corrs), allstack=true, stacktype=pws)
-                        corr_robust = SeisNoise.stack(sum(corrs), allstack=true, stacktype=robuststack)
-                        # save into file 
-                        write(file, "$rec/$comp/linear", corr_mean.corr[:])
-                        write(file, "$rec/$comp/pws", corr_pws.corr[:])
-                        write(file, "$rec/$comp/robust", corr_robust.corr[:])
+                        try
+                            # load correlations for this receiver by component 
+                            files = glob("CORR/$tf*$rec*/$comp/*.jld2")
+                            if length(files) == 0; continue; end
+                            corrs = [load_corr(f, comp) for f in files]
+                            corrs = [c for c in corrs if typeof(c) == CorrData]
+            
+                            # implement linear and phase-weighted stack methods. 
+                            corr_sum = sum_corrs(corrs) # combine correlations into single CorrData object 
+                            if isnothing(corr_sum); continue; end # if corr_sum fails to return, skip component
+
+                            dims = size(corr_sum.corr)
+                            cc_medianmute2!(corr_sum, 3., false) # skip metadata copy which errors on sum_corrs
+                            println("$(length(corrs)) day correlations. Dims: $dims. Threw out $(dims[2]-size(corr_sum.corr)[2]) day windows.")
+
+                            # then stack
+                            corr_mean = SeisNoise.stack(corr_sum, allstack=true, stacktype=mean)
+                            corr_pws = SeisNoise.stack(corr_sum, allstack=true, stacktype=pws)
+
+                            # save to file 
+                            write(file, "$rec/$comp/linear", corr_mean.corr[:])
+                            write(file, "$rec/$comp/pws", corr_pws.corr[:])
+                        catch e 
+                            println("Error in stacking $rec $comp: ", e)
+                        end
                     end
                 catch e
                     println(e)
@@ -256,6 +268,29 @@ sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE",
             end
         end
     end
+    function cc_medianmute2!(C::CorrData, cc_medianmute_α::Float64 = 10.0, bool::Bool = true)
+        """ Median mute function which ignore metadate when bool=false"""
+        C.corr, inds = cc_medianmute(C.corr, cc_medianmute_α)
+        if bool
+            C.t = remove_medianmute(C, inds)
+        end
+        return nothing
+    end
+    function sum_corrs(corrs::Array{CorrData,1})
+        """ Implement sum function on array of corrs before stacking"""
+        try
+            sum_corr = Array{Float64, 2}(undef, size(corrs[1].corr)[1], length(corrs))
+            for (ind, corr) in enumerate(corrs)
+                sum_corr[:, ind] = corr.corr[:]
+            end
+            corr = deepcopy(corrs[1]) # keep metadata from first correlation
+            corr.corr = sum_corr # update array of correlations
+            return corr
+        catch e 
+            println("Error combining correlations: ", c)
+            return nothing
+        end
+    end  
 end
 
 function foldersize(dir=".")
@@ -338,7 +373,9 @@ end
     channel1 = "BH?"
     channel2 = "HH?"
     OUTDIR = "~/data"
-    startdate, enddate = "2019-11-10", "2019-12-15"
+    startdate, enddate = "2017-01-26", "2017-03-26"
+    #startdate, enddate = "2018-07-20","2018-08-27"
+    #startdate, enddate = "2019-11-10", "2019-12-15"
 end
 # 2017
 # startdate, enddate = "2017-01-26", "2017-03-26"
