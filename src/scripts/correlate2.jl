@@ -339,9 +339,14 @@ function correlate_day(dd::Date, sources::Array{String,1}=sources, all_stations:
     println(typeof(filelist_basin))
     println("There are $(length(filelist_basin)) node files available for $path")
     # download scedc and seisbasin data
-    ec2download(aws, scedc, scedc_files, OUTDIR)
-    ec2download(aws, basin, filelist_basin, OUTDIR)
-    println("Download complete!")
+    try
+        ec2download(aws, scedc, scedc_files, OUTDIR)
+        ec2download(aws, basin, filelist_basin, OUTDIR)
+        println("Download complete!")
+    catch e
+        println("Failed to process for $path. Continuing to next day.")
+        return 1
+    end
     # preprocess data
     allf = glob("data/continuous_waveforms/$yr/$path/*")
     broadbands = filter(x -> any(occursin.(sources, x)) && !occursin("Q0066",x), allf)
@@ -373,9 +378,10 @@ end
     channel1 = "BH?"
     channel2 = "HH?"
     OUTDIR = "~/data"
-    startdate, enddate = "2017-01-26", "2017-03-26"
+    #startdate, enddate = "2017-01-26", "2017-03-26"
     #startdate, enddate = "2018-07-20","2018-08-27"
     #startdate, enddate = "2019-11-10", "2019-12-15"
+    startdate, enddate = "2019-11-29", "2019-12-15"
 end
 # 2017
 # startdate, enddate = "2017-01-26", "2017-03-26"
@@ -388,6 +394,7 @@ end
 yr = Dates.year(Date(startdate))
 #dates = vcat(collect(Date("2019-05-11"):Day(1):Date("2019-06-16")), collect(Date(startdate):Day(1):Date(enddate)))
 dates = collect(Date(startdate):Day(1):Date(enddate))
+
 
 job_id = join(["_", Dates.year(Date(startdate))])
 @eval @everywhere yr = $yr

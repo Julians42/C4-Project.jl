@@ -16,6 +16,13 @@ addprocs()
     arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"] # BATCH
     all_stations = DataFrame(CSV.File("root/files/CAstations.csv")) # BATCH - locations file filepathing
 
+    # map arg to find job which hasn't been done 
+    # succeeded = [2,8,10,12,24,25,29,33,36,42,43,47,49,50,51,57,58,59] # jobs which have succeeded
+    # all = collect(0:59)
+    # all = [elt for elt in all if elt ∉ succeeded]
+    all = [7,10,12]
+    arg = all[parse(Int64, arg)+1] # add 1 because julia 1 indexes
+
     #ec2 filepathing
     # arg = 0#ARGS[1] # EC2 - accept month from commandline
     # rootdir = "/home/ubuntu" # EC2 - write files here
@@ -300,7 +307,7 @@ end
                                 write(file, "$rec/meta/baz", get_baz(source_loc, rec_loc))
                             end
                         catch e 
-                            println("Cannot get location information for $rec:", e)
+                            println("Cannot get location information for $rec in CAstations.csv:", e)
                         end
                         for comp in components
                             try
@@ -310,6 +317,21 @@ end
 
                                 corrs = [load_corr(f, comp) for f in files]
                                 corrs = [c for c in corrs if typeof(c) == CorrData]
+
+                                if comp == "EE"
+                                    try
+                                        if !haskey(read(file), "$rec/meta")
+                                            write(file, "$rec/meta/lon", corrs[1].loc.lon)
+                                            write(file, "$rec/meta/lat", corrs[1].loc.lat)
+                                            write(file, "$rec/meta/el", corrs[1].loc.el)
+                                            write(file, "$rec/meta/dist", get_dist(source_loc, corrs[1].loc))
+                                            write(file, "$rec/meta/azi", get_azi(source_loc, corrs[1].loc))
+                                            write(file, "$rec/meta/baz", get_baz(source_loc, corrs[1].loc))
+                                        end
+                                    catch e 
+                                        println("Cannot add metadata:", e)
+                                    end
+                                end
 
                                 # put daily correlations in single file, and remove noisy days
                                 corr_sum = sum_corrs(corrs)
@@ -663,8 +685,8 @@ stack_all()
 
 # transfer to s3
 @everywhere begin
-    autos = glob("autocorrelations/*/*", params["rootdir"])
-    bigcorrs = glob("correlations/*/*", params["rootdir"])
+    autos = glob("autocorrelations/*/$(yr)_$(params["month"])*.h5", params["rootdir"])
+    bigcorrs = glob("correlations/*/$(yr)_$(params["month"])*.h5", params["rootdir"])
 end 
 
 # robust transfer to s3
@@ -672,3 +694,15 @@ robust_pmap(x -> s3_hurl(x, params, "autocorrelations"), autos)
 robust_pmap(x -> s3_hurl(x, params, "correlations"), bigcorrs)
 
 println("Finished Correlations and upload for: ", startdate, " to ",enddate) # summary 
+
+
+# Cleanup 
+#old_corrs = glob("CORR_*/$(yr)_$(params["month"])/*/*/*.jld2", params["rootdir"])
+# single day correlations
+rm(joinpath(params["rootdir"], "CORR_20HZ/$(yr)_$(params["month"])/"), recursive=true)
+rm(joinpath(params["rootdir"], "CORR_1HZ/$(yr)_$(params["month"])/"), recursive=true)
+rm(joinpath(params["rootdir"], "AUTOCORR/$(yr)_$(params["month"])/"), recursive=true)
+# month stacks 
+rm.(autos)
+rm.(bigcorrs)
+println("Cleanup Complete!")
