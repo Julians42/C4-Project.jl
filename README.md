@@ -1,7 +1,6 @@
-# SeisCore.jl
+# C4-Project.jl
 
-SeisCore.jl contains codes for replication of our Ambient-Noise Cross-Correlation method in Julia using High Performance Computing 
-and instructions for accessing our stacked correlation data product.
+`C4-Project.jl` contains codes for replication of our Ambient-Noise Cross-Correlation method in Julia using High Performance Computing and instructions for accessing our stacked correlation data product. We are also developing a package, [`SeisCore.jl`](https://github.com/Julians42/SeisCore.jl), with helpful functions for data processing, and plotting. The [technical README](src/scripts/README.md) for the C4 project is also available!
 
 ## Getting Started
 Our data product is stored in an Amazon Web Services S3 cloud storage [bucket](https://s3.console.aws.amazon.com/s3/buckets/seisbasin?region=us-west-2&tab=objects).

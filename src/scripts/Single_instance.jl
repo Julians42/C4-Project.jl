@@ -11,27 +11,16 @@ addprocs()
     aws = AWS.AWSConfig(region="us-west-2")
     num_procs = nprocs()
 
-    # batch filepathing
-    rootdir = "/scratch" # BATCH: for docker ecs image we have added 2 TB to docker scratch container: "/scratch"
-    arg = ENV["AWS_BATCH_JOB_ARRAY_INDEX"] # BATCH
-    all_stations = DataFrame(CSV.File("root/files/CAstations.csv")) # BATCH - locations file filepathing
-
-    # map arg to find job which hasn't been done 
-    # succeeded = [2,8,10,12,24,25,29,33,36,42,43,47,49,50,51,57,58,59] # jobs which have succeeded
-    # all = collect(0:59)
-    # all = [elt for elt in all if elt ∉ succeeded]
-    all = [6, 9, 11, 13, 14, 15, 17, 18]#12,14,15,16,17,18,19,20]
-    arg = all[parse(Int64, arg)+1] # add 1 because julia 1 indexes
 
     #ec2 filepathing
-    # arg = 0#ARGS[1] # EC2 - accept month from commandline
-    # rootdir = "/home/ubuntu" # EC2 - write files here
-    # all_stations = DataFrame(CSV.File("files/CAstations.csv")) # EC2 - filepathing directly from home dir
+    #arg = 11#ARGS[1] # EC2 - accept month from commandline
+    rootdir = "/home/ubuntu" # EC2 - write files here
+    all_stations = DataFrame(CSV.File("files/CAstations.csv")) # EC2 - filepathing directly from home dir
 
     XMLDIR = joinpath(rootdir, "XML")
 
     # Dates for computation 
-    startdate = Date(2000)+Month(arg)
+    startdate = Date(2001, 3, 1)#+Month(arg)
     enddate = startdate+Month(1)-Day(1)
     days = startdate:Day(1):enddate
     month, yr = Dates.monthname(startdate), Dates.year(startdate)
@@ -59,7 +48,7 @@ end
             name = join(split(name_corr(C), ".")[1:2],".")
             save_named_corr(C,"$(params["rootdir"])/$pref/$(yr)_$(params["month"])/$name/$(C.comp)")
         catch e
-            println(e)
+            #println(e)
         end
     end
     function autocorrelate(station::String, list::Array{String,1}=fft_list_100, params::Dict=params)
@@ -671,8 +660,8 @@ T_download_XML = @elapsed XML_download(aws, params["XMLDIR"])
 println("Metadata downloaded in $T_download_XML seconds.")
 
 # Make directory for saving ffts into 
-if !isdir("/scratch/ffts/")
-    mkpath("/scratch/ffts/")
+if !isdir(joinpath(params["rootdir"],"ffts/"))
+    mkpath(joinpath(params["rootdir"],"ffts/"))
 end
 # Big wrapper function for processing and correlating everything
 
