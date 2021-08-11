@@ -1,9 +1,11 @@
 # The BASIN Project
 
-This folder contains the workflows I developed for computing BASIN cross-correlations on AWS, subsequent plotting, and side investigations. I worked primarily in jupyter notebooks so sorry for the GUI approach to things. Much of the work is file specific so you'll have to change filepaths a lot anyway :) 
+This folder contains the workflows I developed for computing BASIN cross-correlations on AWS, subsequent plotting, and side investigations. For the plotting routines, we primarily used jupyter notebooks for their code and output integration. The correlating scripts will work out of the box but much of the notebooks, which we ran locally, will need filepath edits to run.
 
-### Files
-[`correlate.jl`](scripts/correlate.jl) is the finalized verson of the AWS script for computing basin cross correlations. I recommend connecting with SSH and either uploading the file to your instance or copying and pasting code into the julia command line. You'll need to change the start and enddates and select the year you would like to run.
+### Scripts and the BASIN Module
+[`basin_correlations.jl`](scripts/basin_correlations.jl) is the finalized verson of the AWS script for computing basin cross correlations. I recommend connecting with SSH and either uploading the file to your instance or copying and pasting code into the julia command line. You'll need to change the start and enddates and select the year you would like to run.
+
+[`BASIN.jl`](src/BASIN.jl) is the module in which we store much of the functionality for the basin script. It keeps the actual script nice and clean and allows us to differentiate between the larger routines we use, such as our preprocessing routine, and the smaller functions which deal with lower level details such as file pathing or a single correlation.
 
 ### Notebooks
 I've included 7 notebooks which I used for processing the stacked h5 files and several for looking at daily stacks (I have a few daily files locally so if needed please ping me - they're not anywhere else!). A couple of notes on these:
@@ -16,6 +18,5 @@ I've included 7 notebooks which I used for processing the stacked h5 files and s
 7. [`Ampltudes_through_time.ipynb`](notebooks/Amplitudes_through_time.ipynb): Here we investigated the effects of seasonality on maximum amplitude by looking at daily stacks. As the daily correlations aren't well converged this whole inquiry was somewhat controversial.
 
 ## Thank you for Continuing the Project!
-Excited to see where you are able to take the project! Please feel free to reach out with questions and I will do my best to get back to you!
-## :cloud: :earth_americas: 
-## :mount_fuji: :ski:
+Excited to see where you are able to take the project! Please feel free to reach out with questions or open an issue.
+## :cloud: :earth_americas: :mount_fuji: :ski:
