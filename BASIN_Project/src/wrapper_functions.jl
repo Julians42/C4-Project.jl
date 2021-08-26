@@ -100,8 +100,9 @@ function correlate_day(dd::Date, params::Dict=params)
 
     # filepaths for nodes
     #filelist_b = [f["Key"] for f in s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/")]
-    filelist_b = S3Path("s3://seisbasin/continuous_waveforms/$(yr)/$(path)/") # use new AWS functions
-    filelist_basin = convert.(String, readdir(filelist_b))
+    filelist_b = S3Path("s3://seisbasin/continuous_waveforms/$(yr)/$(path)/", config=aws) # use new AWS functions
+    filelist_basin = joinpath.("seisbasin/continuous_waveforms/$(yr)/$(path)/", 
+                                convert.(String, readdir(filelist_b))) # add directory 
     println(typeof(filelist_basin))
     println("There are $(length(filelist_basin)) node files available for $path")
     # download scedc and seisbasin data
