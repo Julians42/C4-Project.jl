@@ -2,7 +2,7 @@
 
 # pull packages from project file 
 using Pkg 
-Pkg.activate("../../.") # project file lives here
+Pkg.activate("~/C4-Project.jl/.") # project file lives here - need to change if not cloning into home dir
 Pkg.instantiate() # install packages
 
 

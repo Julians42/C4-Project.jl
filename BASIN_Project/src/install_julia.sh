@@ -15,5 +15,4 @@ else
     echo PATH=\$PATH:~/julia-1.5.0/bin/ >> ~/.bashrc
 fi
 source ~/.bashrc
-julia ~/SCEDC-AWS/src/build_environment/julia/add-packages.jl
 cd
