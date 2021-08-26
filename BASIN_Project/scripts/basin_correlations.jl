@@ -2,9 +2,14 @@
 
 # pull packages from project file 
 using Pkg 
-Pkg.activate("~/C4-Project.jl/.") # project file lives here - need to change if not cloning into home dir
-Pkg.instantiate() # install packages
+# Pkg.activate("~/C4-Project.jl/.") # project file lives here - need to change if not cloning into home dir
+#Pkg.instantiate() # install packages
 
+# add SCEDC, which isn't a registered package
+# using Pkg; Pkg.add(PackageSpec(url="https://github.com/tclements/SCEDC.jl", rev="master"))
+# Pkg.resolve()
+# Pkg.activate(".")
+# Pkg.instantiate()
 
 ####################### Packages ########################
 using Distributed, PyCall # add distributed computing
