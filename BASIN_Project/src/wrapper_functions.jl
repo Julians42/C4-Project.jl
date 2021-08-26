@@ -1,12 +1,15 @@
-
+export preprocess, correlate_block, correlate_day, stack_h5
 
 ####################### Preprocessing routine ##########################
-function preprocess(file::String,  accelerometer::Bool=false, rootdir::String="",
-                        freqmin::Float64=freqmin, freqmax::Float64=freqmax, cc_step::Int64=cc_step, 
-                        cc_len::Int64=cc_len, half_win::Int64=half_win, water_level::Float64=water_level, samp_rate::Float64=fs)
+function preprocess(file::String,  accelerometer::Bool=false, params::Dict=params)
     """
         Load raw seisdata file and process, saving to fft per frequency
     """
+    # unpack needed params
+    rootdir, samp_rate = params["rootdir"], params["fs"]
+    freqmin, freqmax, cc_step, cc_len = params["freqmin"], params["freqmax"], params["cc_step"], params["cc_len"]
+    half_win, water_level = params["half_win"], water_level["water_level"]
+
     try
         data = SeisData()
         try # assume mseed
@@ -83,19 +86,22 @@ function correlate_block(src::Array{String,1}, rec::Array{String,1}, maxlag::Flo
 end
 
 #################### Downloads and Correlates day of data ###########################
-function correlate_day(dd::Date, sources::Array{String,1}=sources, all_stations::DataFrame=all_stations)
+function correlate_day(dd::Date, params::Dict=params)
     """ Wrapper function for daily correlations"""
     path = join([Dates.year(dd),lpad(Dates.dayofyear(dd),3,"0")],"_") # Yeilds "YEAR_JDY"
     @eval @everywhere path = $path
-    # get filepaths for source stations - would be faster if they're available
-    #s3_get_file(aws, "seisbasin", "scedc_path/$yr/$path.csv", "scedc_path/$yr/$path.csv")
-    #scedc_files = DataFrame(CSV.File("scedc_path/$yr/$path.csv")).Path
-    scedc_files = get_scedc_files(dd)
+
+    # unpack needed params
+    sources, maxlag, OUTDIR, yr, aws = params["sources"], params["maxlag"], params["OUTDIR"], params["yr"], params["aws"]
+
+    # get filepaths for SCEDC source stations 
+    scedc_files = get_scedc_files(dd, params)
     filter!(x -> any(occursin.(sources, x)), scedc_files)
 
     # filepaths for nodes
-    filelist_b = [f["Key"] for f in s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/")]
-    filelist_basin = [convert(String, x) for x in filelist_b]
+    #filelist_b = [f["Key"] for f in s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/")]
+    filelist_b = S3Path("s3://seisbasin/continuous_waveforms/$(yr)/$(path)/") # use new AWS functions
+    filelist_basin = convert.(String, readdir(filelist_b))
     println(typeof(filelist_basin))
     println("There are $(length(filelist_basin)) node files available for $path")
     # download scedc and seisbasin data
@@ -112,9 +118,9 @@ function correlate_day(dd::Date, sources::Array{String,1}=sources, all_stations:
     broadbands = filter(x -> any(occursin.(sources, x)) && !occursin("Q0066",x), allf)
     accelerometers = [f for f in allf if !any(occursin.(f, broadbands))]
 
-    T_b = @elapsed pmap(f -> preprocess(f), broadbands)
-    T_a = @elapsed pmap(f -> preprocess(f, true), accelerometers)
-    println("Preprocessing Completed")
+    T_b = @elapsed pmap(f -> preprocess(f, false, params), broadbands)
+    T_a = @elapsed pmap(f -> preprocess(f, true, params), accelerometers)
+    println("Preprocessing Completed in $(T_b + T_a) seconds.")
 
     # get indices for block correlation
     fft_paths = glob("ffts/$path/*")
@@ -128,6 +134,9 @@ end
 
 ######################## Stacking Routine ############################
 function stack_h5(tf::String, postfix::String)
+    """Stacks all files for source-reciever pair, saves to h5 file by source"""
+
+    # scrape correlation filenames - get unique sources and receiver combinations
     from_s = glob("CORR/$tf*/*/*")
     found_receivers = unique([join(split(f,".")[4:5],".") for f in from_s])
     components = ["EE","EN","EZ", "NE", "NN","NZ", "ZE", "ZN", "ZZ"]
@@ -136,11 +145,13 @@ function stack_h5(tf::String, postfix::String)
     if !isdir(dirname(filename))
         mkpath(dirname(filename))
     end
+    # create file and open
     h5open(filename, "cw") do file
         source_station = split(tf,".")[2]
         source_loc = LLE_geo(source_station, all_stations)
         samplef = glob("CORR/$tf*/ZZ/*")[1]
         C = load_corr(samplef, "ZZ")
+        # add metadata information about correlation processing and source location 
         if !haskey(read(file), "meta")
             write(file, "meta/corr_type", C.corr_type)
             write(file, "meta/cc_len", C.cc_len)
@@ -157,7 +168,7 @@ function stack_h5(tf::String, postfix::String)
                 write(file, "meta/el", source_loc.el)
             end
         end
-
+        # iterate through node recievers 
         for rec in found_receivers
             try
                 # sample_r = glob("CORR/$tf*$rec*/ZZ/*")[1]
