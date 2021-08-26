@@ -1,15 +1,8 @@
 # script for computing correlations for the BASIN project 
 
-# pull packages from project file 
-using Pkg 
-# Pkg.activate("~/C4-Project.jl/.") # project file lives here - need to change if not cloning into home dir
-#Pkg.instantiate() # install packages
-
-# add SCEDC, which isn't a registered package
-# using Pkg; Pkg.add(PackageSpec(url="https://github.com/tclements/SCEDC.jl", rev="master"))
-# Pkg.resolve()
-# Pkg.activate(".")
-# Pkg.instantiate()
+# you need to specify which year of correlations to run
+# eg the command line to run this file should be something like:
+# `julia basin_correlations.jl XXXX` where XXXX is the year, e.g. 2019
 
 ####################### Packages ########################
 using Distributed, PyCall # add distributed computing
