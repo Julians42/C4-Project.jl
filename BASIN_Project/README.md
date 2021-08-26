@@ -2,10 +2,14 @@
 
 This folder contains the workflows I developed for computing BASIN cross-correlations on AWS, subsequent plotting, and side investigations. For the plotting routines, we primarily used jupyter notebooks for their code and output integration. The correlating scripts will work out of the box but much of the notebooks, which we ran locally, will need filepath edits to run.
 
+## Setting up AWS instance 
+We've made it easy to set up an amazon instance for our computing workflow! Simply run [`setup_env.sh`](src/setup_env.sh) (copy/paste) which installs the AWS CLI, clones this github repo, and installs needed packages. You can then add your credentials (we recommend IAM creds) using `aws configure` (`region: us-west-2` and `output: json`). Finally run the script, e.g. `julia basin_correlations.jl 2019` to run 2019 correlations. 
+
 ### Scripts and the BASIN Module
 [`basin_correlations.jl`](scripts/basin_correlations.jl) is the finalized verson of the AWS script for computing basin cross correlations. I recommend connecting with SSH and either uploading the file to your instance or copying and pasting code into the julia command line. You'll need to change the start and enddates and select the year you would like to run.
 
 [`BASIN.jl`](src/BASIN.jl) is the module in which we store much of the functionality for the basin script. It keeps the actual script nice and clean and allows us to differentiate between the larger routines we use, such as our preprocessing routine, and the smaller functions which deal with lower level details such as file pathing or a single correlation.
+
 
 ### Notebooks
 I've included 7 notebooks which I used for processing the stacked h5 files and several for looking at daily stacks (I have a few daily files locally so if needed please ping me - they're not anywhere else!). A couple of notes on these:
