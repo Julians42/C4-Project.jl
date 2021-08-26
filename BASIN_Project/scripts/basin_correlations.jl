@@ -1,5 +1,10 @@
 # script for computing correlations for the BASIN project 
 
+# pull packages from project file 
+using Pkg 
+Pkg.activate("../../.") # project file lives here
+Pkg.instantiate() # install packages
+
 
 ####################### Packages ########################
 using Distributed, PyCall # add distributed computing
@@ -28,8 +33,8 @@ basin = "seisbasin"
 network = "CI"
 channel1 = "BH?"
 channel2 = "HH?"
-OUTDIR = "~/data"
-rootdir = "~/"
+OUTDIR = "/home/ubuntu/data"
+rootdir = "/home/ubuntu/"
 sources = ["TA2","LPC","CJM", "IPT", "SVD", "SNO", "DEV", "VINE", "ROPE", 
         "ARNO", "LUCI", "ROUF", "KUZD", "ALLI", "CHN", "USB", "Q0048", "Q0066",
         "PASC","RUS","FUL","SRN","BRE"]

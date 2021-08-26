@@ -1,14 +1,14 @@
 export preprocess, correlate_block, correlate_day, stack_h5
 
 ####################### Preprocessing routine ##########################
-function preprocess(file::String,  accelerometer::Bool=false, params::Dict=params)
+function preprocess(file::String,  accelerometer::Bool=false, params::Dict=params, path::String=path)
     """
         Load raw seisdata file and process, saving to fft per frequency
     """
     # unpack needed params
-    rootdir, samp_rate = params["rootdir"], params["fs"]
+    rootdir, samp_rate, all_stations = params["rootdir"], params["fs"], params["all_stations"]
     freqmin, freqmax, cc_step, cc_len = params["freqmin"], params["freqmax"], params["cc_step"], params["cc_len"]
-    half_win, water_level = params["half_win"], water_level["water_level"]
+    half_win, water_level = params["half_win"], params["water_level"]
 
     try
         data = SeisData()
@@ -99,38 +99,38 @@ function correlate_day(dd::Date, params::Dict=params)
     filter!(x -> any(occursin.(sources, x)), scedc_files)
 
     # filepaths for nodes
-    #filelist_b = [f["Key"] for f in s3_list_objects(aws, "seisbasin", "continuous_waveforms/$(yr)/$(path)/")]
     filelist_b = S3Path("s3://seisbasin/continuous_waveforms/$(yr)/$(path)/", config=aws) # use new AWS functions
-    filelist_basin = joinpath.("seisbasin/continuous_waveforms/$(yr)/$(path)/", 
+    filelist_basin = joinpath.("continuous_waveforms/$(yr)/$(path)/", 
                                 convert.(String, readdir(filelist_b))) # add directory 
-    println(typeof(filelist_basin))
     println("There are $(length(filelist_basin)) node files available for $path")
     # download scedc and seisbasin data
     try
-        ec2download(aws, scedc, scedc_files, OUTDIR)
-        ec2download(aws, basin, filelist_basin, OUTDIR)
+        ec2download(aws, "scedc-pds", scedc_files, OUTDIR)
+        ec2download(aws, "seisbasin", filelist_basin, OUTDIR)
         println("Download complete!")
     catch e
+        println(e)
         println("Failed to process for $path. Continuing to next day.")
         return 1
     end
     # preprocess data
-    allf = glob("data/continuous_waveforms/$yr/$path/*")
+    allf = glob("continuous_waveforms/$yr/$path/*", "/home/ubuntu/data/")
     broadbands = filter(x -> any(occursin.(sources, x)) && !occursin("Q0066",x), allf)
     accelerometers = [f for f in allf if !any(occursin.(f, broadbands))]
 
-    T_b = @elapsed pmap(f -> preprocess(f, false, params), broadbands)
-    T_a = @elapsed pmap(f -> preprocess(f, true, params), accelerometers)
+    T_b = @elapsed pmap(f -> preprocess(f, false, params, path), broadbands)
+    T_a = @elapsed pmap(f -> preprocess(f, true, params, path), accelerometers)
     println("Preprocessing Completed in $(T_b + T_a) seconds.")
 
     # get indices for block correlation
-    fft_paths = glob("ffts/$path/*")
+    fft_paths = glob("ffts/$path/*", "/home/ubuntu/")
     sources = filter(f -> any(occursin.(sources, f)), fft_paths)
     recievers = filter(f -> !any(occursin.(sources, f)), fft_paths)
     reciever_blocks = collect(Iterators.partition(recievers, convert(Int64, ceil(length(recievers)/nprocs())))) # chunk into 25 recievers to streamline IO and speed computation 
     println("Now Correlating $(length(reciever_blocks)) correlation blocks!")
     Tcorrelate = @elapsed pmap(rec_files -> correlate_block(sources, collect(rec_files), maxlag), reciever_blocks)
-    rm("data/continuous_waveforms", recursive=true) # cleanup raw data
+    println("$(length(reciever_blocks)) blocks correlated in $Tcorrelate seconds.")
+    rm("/home/ubuntu/data/continuous_waveforms", recursive=true) # cleanup raw data
 end
 
 ######################## Stacking Routine ############################
