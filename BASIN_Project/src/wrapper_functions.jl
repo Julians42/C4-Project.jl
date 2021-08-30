@@ -73,7 +73,7 @@ function correlate_block(src::Array{String,1}, rec::Array{String,1}, maxlag::Flo
         for receiver in receivers
             try
                 C = correlate(source,receiver,maxlag)
-                cc_medianmute!(C, 10.) # remove correlation windows with high noise # try run with medianmute - robust stack on daily
+                cc_medianmute!(C, 10.) # remove correlation windows with high noise 
                 stack!(C)
                 pair, comp = name_corr(C), C.comp
                 save_named_corr(C,"CORR/$pair/$comp")
@@ -126,17 +126,24 @@ function correlate_day(dd::Date, params::Dict=params)
     fft_paths = glob("ffts/$path/*", "/home/ubuntu/")
     sources = filter(f -> any(occursin.(sources, f)), fft_paths)
     recievers = filter(f -> !any(occursin.(sources, f)), fft_paths)
-    reciever_blocks = collect(Iterators.partition(recievers, convert(Int64, ceil(length(recievers)/nprocs())))) # chunk into 25 recievers to streamline IO and speed computation 
-    println("Now Correlating $(length(reciever_blocks)) correlation blocks!")
-    Tcorrelate = @elapsed pmap(rec_files -> correlate_block(sources, collect(rec_files), maxlag), reciever_blocks)
-    println("$(length(reciever_blocks)) blocks correlated in $Tcorrelate seconds.")
+    print("There are $(length(recievers)) available for correlation.")
+    if length(recievers) == 0 # if no ffts available for that day 
+        return 1
+    else # then data available: Correlate!
+        reciever_blocks = collect(Iterators.partition(recievers, convert(Int64, ceil(length(recievers)/nprocs())))) 
+        println("Now Correlating $(length(reciever_blocks)) correlation blocks!")
+        Tcorrelate = @elapsed pmap(rec_files -> correlate_block(sources, collect(rec_files), maxlag), reciever_blocks)
+        println("$(length(reciever_blocks)) blocks correlated in $Tcorrelate seconds for $path.")
+    end
     rm("/home/ubuntu/data/continuous_waveforms", recursive=true) # cleanup raw data
 end
 
 ######################## Stacking Routine ############################
-function stack_h5(tf::String, postfix::String)
+function stack_h5(tf::String, postfix::String, params::Dict)
     """Stacks all files for source-reciever pair, saves to h5 file by source"""
 
+    # extract needed parameters from dict
+    yr, all_stations = params["yr"], params["all_stations"]
     # scrape correlation filenames - get unique sources and receiver combinations
     from_s = glob("CORR/$tf*/*/*")
     found_receivers = unique([join(split(f,".")[4:5],".") for f in from_s])
@@ -198,7 +205,8 @@ function stack_h5(tf::String, postfix::String)
 
                         dims = size(corr_sum.corr)
                         cc_medianmute2!(corr_sum, 3., false) # skip metadata copy which errors on sum_corrs
-                        println("$(length(corrs)) day correlations. Dims: $dims. Threw out $(dims[2]-size(corr_sum.corr)[2]) day windows.")
+                        println("$(length(corrs)) day correlations. Dims: $dims. ",
+                                "Threw out $(dims[2]-size(corr_sum.corr)[2]) day windows.")
 
                         # then stack
                         corr_mean = SeisNoise.stack(corr_sum, allstack=true, stacktype=mean)

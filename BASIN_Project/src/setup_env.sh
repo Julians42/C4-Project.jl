@@ -15,8 +15,8 @@ git clone https://github.com/Julians42/C4-Project.jl.git
 cd C4-Project.jl
 git checkout Develop
 
-# install julia
+# install julia - you may need to restart terminal before julia runs
 bash BASIN_Project/src/install_julia.sh
 
 # add packages - use project.toml if most recent versions don't work
-julia add-packages.jl
+julia BASIN_Project/src/add-packages.jl

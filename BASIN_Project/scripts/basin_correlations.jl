@@ -76,7 +76,7 @@ Tfull = @elapsed map(dayofyear -> correlate_day(dayofyear, params), dates)
 
 ############### Stack day correlations ###################
 found_sources = unique([join(split(f,".")[1:2],".") for f in readdir("CORR/")]) # get files to save
-T = @elapsed pmap(x -> stack_h5(x, job_id), found_sources)
+T = @elapsed pmap(x -> stack_h5(x, job_id, params), found_sources)
 ##########################################################
 
 
