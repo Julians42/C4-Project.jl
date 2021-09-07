@@ -141,7 +141,7 @@ end
 ######################## Stacking Routine ############################
 function stack_h5(tf::String, postfix::String, params::Dict)
     """Stacks all files for source-reciever pair, saves to h5 file by source"""
-
+    
     # extract needed parameters from dict
     yr, all_stations = params["yr"], params["all_stations"]
     # scrape correlation filenames - get unique sources and receiver combinations
