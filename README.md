@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/279383371.svg)](https://doi.org/10.5281/zenodo.15276643)
+
 # C4-Project.jl
 
 `C4-Project.jl` contains codes for replication of our Ambient-Noise Cross-Correlation method in Julia using High Performance Computing and instructions for accessing our stacked correlation data product. We are also developing a package, [`SeisCore.jl`](https://github.com/Julians42/SeisCore.jl), with helpful functions for data processing, and plotting. The [technical README](src/scripts/README.md) for the C4 project is also available!
